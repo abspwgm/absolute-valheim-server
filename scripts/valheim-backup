@@ -3,10 +3,13 @@
 # Valheim Backup - Automated backup of world files
 # =============================================================================
 
-set -e
+# Don't use set -e - handle errors explicitly for better diagnostics
 
 # Source common functions
-source /opt/valheim/scripts/common
+if ! source /opt/valheim/scripts/common; then
+    echo "[ERROR] Failed to source common functions"
+    exit 1
+fi
 
 # Parse arguments
 FORCE_BACKUP=false

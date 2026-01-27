@@ -34,7 +34,16 @@ test_server_start() {
     local max_attempts=60
     
     while [[ ${attempts} -lt ${max_attempts} ]]; do
-        if docker exec valheim-server test -f /opt/valheim/server/valheim_server.x86_64; then
+        # First check if container is still running
+        if [[ $(docker inspect -f '{{.State.Running}}' valheim-server 2>/dev/null) != "true" ]]; then
+            log_error "Container stopped unexpectedly during startup"
+            log_error "=== Container Logs ==="
+            docker logs valheim-server 2>&1 || true
+            log_error "=== End Container Logs ==="
+            return 1
+        fi
+        
+        if docker exec valheim-server test -f /opt/valheim/server/valheim_server.x86_64 2>/dev/null; then
             log_info "Server binary found"
             break
         fi
@@ -44,6 +53,9 @@ test_server_start() {
     
     if [[ ${attempts} -ge ${max_attempts} ]]; then
         log_error "Server binary not found after ${max_attempts} attempts"
+        log_error "=== Container Logs ==="
+        docker logs valheim-server 2>&1 || true
+        log_error "=== End Container Logs ==="
         return 1
     fi
     

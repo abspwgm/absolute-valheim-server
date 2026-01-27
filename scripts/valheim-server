@@ -3,10 +3,14 @@
 # Valheim Server - Start/stop script for the dedicated server
 # =============================================================================
 
-set -e
+# Don't use set -e for the server script - handle errors explicitly
+# This prevents premature exits during graceful shutdown
 
 # Source common functions
-source /opt/valheim/scripts/common
+if ! source /opt/valheim/scripts/common; then
+    echo "[ERROR] Failed to source common functions"
+    exit 1
+fi
 
 # -----------------------------------------------------------------------------
 # Build server arguments
