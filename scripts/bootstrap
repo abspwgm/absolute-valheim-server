@@ -1,0 +1,143 @@
+#!/bin/bash
+# =============================================================================
+# Bootstrap script - Container initialization and startup
+# Handles permissions, updates, and launches supervisor
+# =============================================================================
+
+set -e
+
+# Source common functions
+source /opt/valheim/scripts/common
+
+log_info "=========================================="
+log_info "Absolute Valheim Server - Starting"
+log_info "=========================================="
+
+# -----------------------------------------------------------------------------
+# Setup timezone
+# -----------------------------------------------------------------------------
+setup_timezone
+
+# -----------------------------------------------------------------------------
+# Setup permissions
+# -----------------------------------------------------------------------------
+setup_permissions
+
+# -----------------------------------------------------------------------------
+# Create required directories
+# -----------------------------------------------------------------------------
+log_info "Creating required directories"
+mkdir -p "${WORLDS_PATH}"
+mkdir -p "${BACKUPS_PATH}"
+mkdir -p "${LOG_PATH}"
+mkdir -p "${PID_PATH}"
+mkdir -p "${VALHEIM_SERVER_PATH}"
+
+# -----------------------------------------------------------------------------
+# Setup admin lists
+# -----------------------------------------------------------------------------
+setup_admin_lists
+
+# -----------------------------------------------------------------------------
+# Run update on start if enabled
+# -----------------------------------------------------------------------------
+if is_update_on_start_enabled; then
+    log_info "Update on start is enabled"
+    
+    UPDATE_TIMEOUT="${UPDATE_TIMEOUT:-900}"
+    log_info "Running SteamCMD update (timeout: ${UPDATE_TIMEOUT}s)"
+    
+    # Run update with timeout
+    if timeout "${UPDATE_TIMEOUT}" /opt/valheim/scripts/valheim-updater --force; then
+        log_success "Server update completed successfully"
+    else
+        exit_code=$?
+        if [[ ${exit_code} -eq 124 ]]; then
+            log_error "Server update timed out after ${UPDATE_TIMEOUT}s"
+            # Continue anyway if server files exist
+            if [[ -f "${VALHEIM_SERVER_BINARY}" ]]; then
+                log_warn "Continuing with existing server files"
+            else
+                log_error "No server files found, cannot continue"
+                exit 1
+            fi
+        else
+            log_error "Server update failed with exit code ${exit_code}"
+            if [[ -f "${VALHEIM_SERVER_BINARY}" ]]; then
+                log_warn "Continuing with existing server files"
+            else
+                log_error "No server files found, cannot continue"
+                exit 1
+            fi
+        fi
+    fi
+else
+    log_info "Update on start is disabled"
+    # Check if server files exist
+    if [[ ! -f "${VALHEIM_SERVER_BINARY}" ]]; then
+        log_warn "Server files not found, forcing update"
+        if ! /opt/valheim/scripts/valheim-updater --force; then
+            log_error "Failed to download server files"
+            exit 1
+        fi
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# Verify server binary exists
+# -----------------------------------------------------------------------------
+if [[ ! -f "${VALHEIM_SERVER_BINARY}" ]]; then
+    log_error "Server binary not found at ${VALHEIM_SERVER_BINARY}"
+    log_error "Please check SteamCMD logs for errors"
+    exit 1
+fi
+
+log_success "Server binary found: ${VALHEIM_SERVER_BINARY}"
+
+# -----------------------------------------------------------------------------
+# Display configuration
+# -----------------------------------------------------------------------------
+log_info "=========================================="
+log_info "Server Configuration:"
+log_info "  Name: $(get_server_name)"
+log_info "  World: $(get_world_name)"
+log_info "  Port: $(get_server_port)"
+log_info "  Public: $(is_server_public && echo 'Yes' || echo 'No')"
+log_info "  Crossplay: $(is_crossplay_enabled && echo 'Enabled' || echo 'Disabled')"
+log_info "  Backups: $(is_backups_enabled && echo 'Enabled' || echo 'Disabled')"
+log_info "=========================================="
+
+# -----------------------------------------------------------------------------
+# Setup cron jobs for updates and backups
+# -----------------------------------------------------------------------------
+log_info "Setting up scheduled tasks"
+
+# Create cron file
+CRON_FILE="/etc/cron.d/valheim"
+echo "# Valheim server scheduled tasks" > "${CRON_FILE}"
+echo "SHELL=/bin/bash" >> "${CRON_FILE}"
+echo "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin" >> "${CRON_FILE}"
+
+# Update cron (if configured)
+if [[ -n "${UPDATE_CRON}" ]]; then
+    log_info "Configuring update cron: ${UPDATE_CRON}"
+    echo "${UPDATE_CRON} root /opt/valheim/scripts/valheim-updater >> /var/log/valheim/updater.log 2>&1" >> "${CRON_FILE}"
+fi
+
+# Backup cron (if enabled)
+if is_backups_enabled && [[ -n "${BACKUPS_CRON}" ]]; then
+    log_info "Configuring backup cron: ${BACKUPS_CRON}"
+    echo "${BACKUPS_CRON} root /opt/valheim/scripts/valheim-backup >> /var/log/valheim/backup.log 2>&1" >> "${CRON_FILE}"
+fi
+
+echo "" >> "${CRON_FILE}"
+chmod 644 "${CRON_FILE}"
+
+# Start cron daemon
+service cron start || true
+
+# -----------------------------------------------------------------------------
+# Start supervisor (manages server process)
+# -----------------------------------------------------------------------------
+log_info "Starting supervisor"
+exec /usr/bin/supervisord -n -c /etc/supervisor/supervisord.conf

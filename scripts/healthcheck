@@ -1,0 +1,38 @@
+#!/bin/bash
+# =============================================================================
+# Health Check - Verifies server is running and responsive
+# =============================================================================
+
+# Source common functions
+source /opt/valheim/scripts/common 2>/dev/null || true
+
+# Check if server process is running
+if ! pgrep -f "valheim_server.x86_64" > /dev/null 2>&1; then
+    echo "UNHEALTHY: Server process not running"
+    exit 1
+fi
+
+# Check if server is accepting connections by probing the query port
+SERVER_PORT="${SERVER_PORT:-2456}"
+QUERY_PORT=$((SERVER_PORT + 1))
+
+# Use netcat to check if port is open (basic check)
+if command -v nc &> /dev/null; then
+    if ! nc -z -u -w 2 127.0.0.1 "${QUERY_PORT}" 2>/dev/null; then
+        # UDP check might fail even if server is up, so just warn
+        echo "WARNING: Query port ${QUERY_PORT} may not be responding"
+    fi
+fi
+
+# Check if we've seen the "Game server connected" message recently
+LOG_FILE="/var/log/valheim/valheim-server.log"
+if [[ -f "${LOG_FILE}" ]]; then
+    if grep -q "Game server connected" "${LOG_FILE}"; then
+        echo "HEALTHY: Server is running and was connected to Steam"
+        exit 0
+    fi
+fi
+
+# Basic check passed - process is running
+echo "HEALTHY: Server process is running (PID: $(pgrep -f valheim_server.x86_64))"
+exit 0

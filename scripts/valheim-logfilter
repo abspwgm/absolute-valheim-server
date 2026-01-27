@@ -1,0 +1,126 @@
+#!/bin/bash
+# =============================================================================
+# Valheim Log Filter - Filters noisy output from the server
+# =============================================================================
+
+# Configuration from environment
+FILTER_EMPTY="${LOG_FILTER_EMPTY:-true}"
+FILTER_UTF8="${LOG_FILTER_UTF8:-true}"
+FILTER_CONTAINS="${LOG_FILTER_CONTAINS:-}"
+
+# Default patterns to filter (common noise)
+DEFAULT_FILTER_PATTERNS=(
+    "(Filename:"
+    "Fallback handler could not load library"
+    "shader is not supported"
+    "Assertion"
+    "Assertion Failed"
+    "0x00"
+)
+
+# Patterns that indicate important events (always show)
+IMPORTANT_PATTERNS=(
+    "Game server connected"
+    "World saved"
+    "Got character ZDOID"
+    "Closing socket"
+    "has wrong password"
+    "Steam game server initialized"
+    "Load error"
+    "Exception"
+    "Error"
+    "ERROR"
+)
+
+# -----------------------------------------------------------------------------
+# Check if line should be filtered
+# -----------------------------------------------------------------------------
+should_filter() {
+    local line="$1"
+    
+    # Never filter important messages
+    for pattern in "${IMPORTANT_PATTERNS[@]}"; do
+        if [[ "${line}" == *"${pattern}"* ]]; then
+            return 1  # Don't filter
+        fi
+    done
+    
+    # Filter empty lines
+    if [[ "${FILTER_EMPTY,,}" == "true" ]]; then
+        # Empty or whitespace only
+        if [[ -z "${line}" ]] || [[ "${line}" =~ ^[[:space:]]*$ ]]; then
+            return 0  # Filter
+        fi
+    fi
+    
+    # Filter invalid UTF-8 (binary garbage)
+    if [[ "${FILTER_UTF8,,}" == "true" ]]; then
+        if ! echo "${line}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+            return 0  # Filter
+        fi
+    fi
+    
+    # Filter default noisy patterns
+    for pattern in "${DEFAULT_FILTER_PATTERNS[@]}"; do
+        if [[ "${line}" == *"${pattern}"* ]]; then
+            return 0  # Filter
+        fi
+    done
+    
+    # Filter custom contains patterns
+    if [[ -n "${FILTER_CONTAINS}" ]]; then
+        IFS='|' read -ra custom_patterns <<< "${FILTER_CONTAINS}"
+        for pattern in "${custom_patterns[@]}"; do
+            if [[ -n "${pattern}" ]] && [[ "${line}" == *"${pattern}"* ]]; then
+                return 0  # Filter
+            fi
+        done
+    fi
+    
+    return 1  # Don't filter
+}
+
+# -----------------------------------------------------------------------------
+# Format log line with timestamp
+# -----------------------------------------------------------------------------
+format_line() {
+    local line="$1"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # Check for important events and highlight them
+    for pattern in "${IMPORTANT_PATTERNS[@]}"; do
+        if [[ "${line}" == *"${pattern}"* ]]; then
+            echo "[${timestamp}] [IMPORTANT] ${line}"
+            return
+        fi
+    done
+    
+    echo "[${timestamp}] ${line}"
+}
+
+# -----------------------------------------------------------------------------
+# Main filter loop
+# -----------------------------------------------------------------------------
+main() {
+    local log_file="${LOG_PATH:-/var/log/valheim}/valheim-server.log"
+    
+    # Ensure log directory exists
+    mkdir -p "$(dirname "${log_file}")"
+    
+    # Process stdin
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        if ! should_filter "${line}"; then
+            formatted=$(format_line "${line}")
+            
+            # Output to stdout
+            echo "${formatted}"
+            
+            # Also write to log file
+            echo "${formatted}" >> "${log_file}"
+        fi
+    done
+}
+
+# Run main
+main

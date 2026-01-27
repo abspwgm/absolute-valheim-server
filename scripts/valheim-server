@@ -1,0 +1,201 @@
+#!/bin/bash
+# =============================================================================
+# Valheim Server - Start/stop script for the dedicated server
+# =============================================================================
+
+set -e
+
+# Source common functions
+source /opt/valheim/scripts/common
+
+# -----------------------------------------------------------------------------
+# Build server arguments
+# -----------------------------------------------------------------------------
+build_server_args() {
+    local args="-nographics -batchmode"
+    
+    args="${args} -port $(get_server_port)"
+    args="${args} -name \"$(get_server_name)\""
+    args="${args} -world \"$(get_world_name)\""
+    args="${args} -savedir \"${CONFIG_PATH}\""
+    
+    # Password (minimum 5 characters required by Valheim)
+    local password
+    password=$(get_server_password)
+    if [[ -n "${password}" ]]; then
+        if [[ ${#password} -lt 5 ]]; then
+            log_error "Password must be at least 5 characters"
+            exit 1
+        fi
+        args="${args} -password \"${password}\""
+    fi
+    
+    # Public server
+    if is_server_public; then
+        args="${args} -public 1"
+    else
+        args="${args} -public 0"
+    fi
+    
+    # Crossplay support
+    if is_crossplay_enabled; then
+        args="${args} -crossplay"
+    fi
+    
+    # Additional custom arguments
+    if [[ -n "${SERVER_ARGS}" ]]; then
+        args="${args} ${SERVER_ARGS}"
+    fi
+    
+    echo "${args}"
+}
+
+# -----------------------------------------------------------------------------
+# Start server
+# -----------------------------------------------------------------------------
+start_server() {
+    log_info "Starting Valheim dedicated server"
+    
+    # Check if already running
+    if is_server_running; then
+        log_warn "Server is already running (PID: $(get_server_pid))"
+        return 0
+    fi
+    
+    # Verify binary exists
+    if [[ ! -f "${VALHEIM_SERVER_BINARY}" ]]; then
+        log_error "Server binary not found: ${VALHEIM_SERVER_BINARY}"
+        return 1
+    fi
+    
+    # Make sure binary is executable
+    chmod +x "${VALHEIM_SERVER_BINARY}"
+    
+    # Set required environment variables for Valheim
+    export SteamAppId="${VALHEIM_CLIENT_APP_ID}"
+    export LD_LIBRARY_PATH="${VALHEIM_SERVER_PATH}/linux64:${LD_LIBRARY_PATH}"
+    
+    # Build arguments
+    local args
+    args=$(build_server_args)
+    
+    log_info "Server arguments: ${args}"
+    log_info "Working directory: ${VALHEIM_SERVER_PATH}"
+    
+    # Change to server directory
+    cd "${VALHEIM_SERVER_PATH}"
+    
+    # Start server with log filtering
+    eval "${VALHEIM_SERVER_BINARY}" ${args} 2>&1 | /opt/valheim/scripts/valheim-logfilter &
+    
+    # Get PID of the server process (not the pipe)
+    local server_pid=$!
+    
+    # Wait a moment and find the actual server PID
+    sleep 2
+    local actual_pid
+    actual_pid=$(pgrep -f "valheim_server.x86_64" | head -1)
+    
+    if [[ -n "${actual_pid}" ]]; then
+        echo "${actual_pid}" > "${VALHEIM_SERVER_PID}"
+        log_success "Server started with PID: ${actual_pid}"
+    else
+        log_error "Failed to start server"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Stop server
+# -----------------------------------------------------------------------------
+stop_server() {
+    log_info "Stopping Valheim server"
+    
+    local pid
+    pid=$(get_server_pid)
+    
+    if [[ -z "${pid}" ]]; then
+        log_warn "Server is not running"
+        rm -f "${VALHEIM_SERVER_PID}"
+        return 0
+    fi
+    
+    log_info "Sending SIGINT to server (PID: ${pid}) for graceful shutdown"
+    
+    # Send SIGINT for graceful shutdown (allows world save)
+    kill -INT "${pid}" 2>/dev/null || true
+    
+    # Wait for server to stop (up to 120 seconds for world save)
+    local timeout=120
+    local elapsed=0
+    
+    while kill -0 "${pid}" 2>/dev/null; do
+        if [[ ${elapsed} -ge ${timeout} ]]; then
+            log_warn "Server did not stop gracefully, sending SIGKILL"
+            kill -KILL "${pid}" 2>/dev/null || true
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+        
+        # Log progress every 10 seconds
+        if [[ $((elapsed % 10)) -eq 0 ]]; then
+            log_info "Waiting for server to stop... (${elapsed}s/${timeout}s)"
+        fi
+    done
+    
+    rm -f "${VALHEIM_SERVER_PID}"
+    log_success "Server stopped"
+}
+
+# -----------------------------------------------------------------------------
+# Restart server
+# -----------------------------------------------------------------------------
+restart_server() {
+    log_info "Restarting Valheim server"
+    stop_server
+    sleep 5
+    start_server
+}
+
+# -----------------------------------------------------------------------------
+# Server status
+# -----------------------------------------------------------------------------
+status_server() {
+    if is_server_running; then
+        local pid
+        pid=$(get_server_pid)
+        log_info "Server is running (PID: ${pid})"
+        return 0
+    else
+        log_info "Server is not running"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+case "${1:-start}" in
+    start)
+        start_server
+        # Keep running to maintain supervisor process
+        while is_server_running; do
+            sleep 10
+        done
+        log_warn "Server process exited"
+        ;;
+    stop)
+        stop_server
+        ;;
+    restart)
+        restart_server
+        ;;
+    status)
+        status_server
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
