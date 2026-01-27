@@ -66,10 +66,15 @@ RUN mkdir -p /opt/valheim/server \
     && chown -R valheim:valheim /var/run/valheim
 
 # Copy scripts
-COPY --chmod=755 scripts/ /opt/valheim/scripts/
+COPY scripts/ /opt/valheim/scripts/
+
+# Fix line endings (in case of Windows CRLF) and set permissions
+RUN find /opt/valheim/scripts -type f -exec sed -i 's/\r$//' {} \; \
+    && chmod +x /opt/valheim/scripts/*
 
 # Copy supervisor configuration
 COPY config/supervisord.conf /etc/supervisor/conf.d/valheim.conf
+RUN sed -i 's/\r$//' /etc/supervisor/conf.d/valheim.conf
 
 # Environment variables with defaults
 ENV SERVER_NAME="My Valheim Server" \
