@@ -15,7 +15,9 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 E2E_DIR="${SCRIPT_DIR}/e2e"
 
 # Test configuration
-CONTAINER_NAME="valheim-test"
+CONTAINER_NAME="valheim-server"
+COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.test.yml"
+ENV_FILE="${PROJECT_ROOT}/.env.test"
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"  # 10 minutes default
 STARTUP_WAIT="${STARTUP_WAIT:-300}"  # 5 minutes for server startup
 
@@ -61,8 +63,29 @@ log_header() {
 # -----------------------------------------------------------------------------
 # Setup and Teardown
 # -----------------------------------------------------------------------------
+cleanup_existing() {
+    log_info "Cleaning up any existing containers"
+    
+    cd "${PROJECT_ROOT}"
+    
+    # Stop and remove any existing containers
+    docker compose -f docker-compose.yml --env-file .env.test down -v 2>/dev/null || true
+    docker compose down -v 2>/dev/null || true
+    docker rm -f valheim-server 2>/dev/null || true
+    docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+    
+    # Remove any orphaned networks
+    docker network prune -f 2>/dev/null || true
+    
+    # Wait for ports to be released
+    sleep 2
+}
+
 setup_test_environment() {
     log_header "Setting up test environment"
+    
+    # First cleanup any existing resources
+    cleanup_existing
     
     cd "${PROJECT_ROOT}"
     
@@ -89,7 +112,7 @@ EOF
     
     # Build the container
     log_info "Building Docker image"
-    docker compose build --no-cache
+    docker compose -f "${COMPOSE_FILE}" build --no-cache
     
     log_success "Test environment ready"
 }
@@ -100,11 +123,14 @@ cleanup_test_environment() {
     cd "${PROJECT_ROOT}"
     
     # Stop and remove containers
-    docker compose -f docker-compose.yml --env-file .env.test down -v 2>/dev/null || true
+    docker compose -f "${COMPOSE_FILE}" down -v 2>/dev/null || true
     docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
     
     # Clean up test files
-    rm -f .env.test
+    rm -f "${ENV_FILE}"
+    
+    # Remove test volumes
+    docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
     
     log_success "Cleanup complete"
 }
@@ -118,13 +144,14 @@ start_container() {
     cd "${PROJECT_ROOT}"
     
     # Start container with test config
-    docker compose -f docker-compose.yml --env-file .env.test up -d
+    docker compose -f "${COMPOSE_FILE}" up -d
     
     # Wait for container to be running
     local attempts=0
-    while [[ $(docker inspect -f '{{.State.Running}}' valheim-server 2>/dev/null) != "true" ]]; do
+    while [[ $(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null) != "true" ]]; do
         if [[ ${attempts} -ge 30 ]]; then
             log_error "Container failed to start"
+            docker compose -f "${COMPOSE_FILE}" logs
             return 1
         fi
         sleep 1
@@ -138,13 +165,13 @@ stop_container() {
     log_info "Stopping test container"
     
     cd "${PROJECT_ROOT}"
-    docker compose -f docker-compose.yml --env-file .env.test down 2>/dev/null || true
+    docker compose -f "${COMPOSE_FILE}" down 2>/dev/null || true
     
     log_success "Container stopped"
 }
 
 get_container_logs() {
-    docker logs valheim-server 2>&1
+    docker logs "${CONTAINER_NAME}" 2>&1
 }
 
 # -----------------------------------------------------------------------------

@@ -65,15 +65,7 @@ services:
 # Named volumes for data persistence
 volumes:
   valheim-config:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./data/config
+    name: absolute-valheim-server_valheim-config
   
   valheim-server:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./data/server
+    name: absolute-valheim-server_valheim-server

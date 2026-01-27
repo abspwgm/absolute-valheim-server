@@ -114,6 +114,12 @@ jobs:
           chmod +x tests/test_helpers.sh
           chmod +x tests/e2e/*.sh
 
+      - name: Cleanup any existing containers
+        run: |
+          docker compose down -v 2>/dev/null || true
+          docker rm -f valheim-server 2>/dev/null || true
+          docker network prune -f 2>/dev/null || true
+
       - name: Run E2E test suite
         id: e2e-tests
         run: |
@@ -184,6 +190,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false
+          load: true
           tags: absolute-valheim-server:build-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
