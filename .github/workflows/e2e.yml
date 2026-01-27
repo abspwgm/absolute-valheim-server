@@ -1,0 +1,200 @@
+# =============================================================================
+# Absolute Valheim Server - E2E Test Workflow
+# =============================================================================
+# Runs end-to-end tests on every push and pull request.
+# Caches server files to speed up subsequent runs.
+# =============================================================================
+
+name: E2E Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_cache:
+        description: 'Skip server file cache'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  VALHEIM_APP_ID: '896660'
+
+jobs:
+  e2e-tests:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ---------------------------------------------------------------------
+      # Checkout and Setup
+      # ---------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ---------------------------------------------------------------------
+      # Cache Server Files
+      # ---------------------------------------------------------------------
+      - name: Create cache directories
+        run: |
+          mkdir -p data/server
+          mkdir -p data/config
+
+      - name: Restore server file cache
+        if: ${{ github.event.inputs.skip_cache != 'true' }}
+        uses: actions/cache@v4
+        id: server-cache
+        with:
+          path: data/server
+          key: valheim-server-${{ env.VALHEIM_APP_ID }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            valheim-server-${{ env.VALHEIM_APP_ID }}-
+
+      - name: Cache status
+        run: |
+          if [ "${{ steps.server-cache.outputs.cache-hit }}" == "true" ]; then
+            echo "✅ Server files restored from cache"
+            ls -la data/server/ || true
+          else
+            echo "⚠️ No cache found, server files will be downloaded"
+          fi
+
+      # ---------------------------------------------------------------------
+      # Generate .env from GitHub Variables/Secrets
+      # ---------------------------------------------------------------------
+      - name: Generate .env file
+        run: |
+          cat > .env << EOF
+          # Auto-generated for E2E tests
+          SERVER_NAME=${{ vars.SERVER_NAME || 'E2E Test Server' }}
+          SERVER_PORT=${{ vars.SERVER_PORT || '2456' }}
+          WORLD_NAME=${{ vars.WORLD_NAME || 'TestWorld' }}
+          SERVER_PASS=${{ secrets.SERVER_PASS || 'testpass123' }}
+          SERVER_PUBLIC=${{ vars.SERVER_PUBLIC || 'false' }}
+          CROSSPLAY=${{ vars.CROSSPLAY || 'false' }}
+          UPDATE_ON_START=${{ vars.UPDATE_ON_START || 'true' }}
+          UPDATE_TIMEOUT=${{ vars.UPDATE_TIMEOUT || '600' }}
+          BACKUPS_ENABLED=${{ vars.BACKUPS_ENABLED || 'true' }}
+          BACKUPS_CRON=${{ vars.BACKUPS_CRON || '0 * * * *' }}
+          PUID=${{ vars.PUID || '1000' }}
+          PGID=${{ vars.PGID || '1000' }}
+          TZ=${{ vars.TZ || 'Etc/UTC' }}
+          EOF
+          
+          echo "Generated .env file:"
+          cat .env
+
+      # ---------------------------------------------------------------------
+      # Build Docker Image
+      # ---------------------------------------------------------------------
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: absolute-valheim-server:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------------
+      # Run E2E Tests
+      # ---------------------------------------------------------------------
+      - name: Make test scripts executable
+        run: |
+          chmod +x tests/run_e2e.sh
+          chmod +x tests/test_helpers.sh
+          chmod +x tests/e2e/*.sh
+
+      - name: Run E2E test suite
+        id: e2e-tests
+        run: |
+          ./tests/run_e2e.sh
+        env:
+          TEST_TIMEOUT: 600
+          STARTUP_WAIT: 300
+
+      # ---------------------------------------------------------------------
+      # Collect Artifacts on Failure
+      # ---------------------------------------------------------------------
+      - name: Collect container logs
+        if: failure()
+        run: |
+          mkdir -p test-artifacts
+          docker logs valheim-server > test-artifacts/container.log 2>&1 || true
+          docker inspect valheim-server > test-artifacts/container-inspect.json 2>&1 || true
+          cp .env test-artifacts/ || true
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts
+          path: test-artifacts/
+          retention-days: 7
+
+      # ---------------------------------------------------------------------
+      # Update Server File Cache
+      # ---------------------------------------------------------------------
+      - name: Save server files to cache
+        if: always()
+        run: |
+          # Copy server files from container volume if tests ran
+          if docker ps -a | grep -q valheim-server; then
+            echo "Extracting server files for cache..."
+            docker cp valheim-server:/opt/valheim/server/. data/server/ 2>/dev/null || true
+            ls -la data/server/ | head -20 || true
+          fi
+
+      # ---------------------------------------------------------------------
+      # Cleanup
+      # ---------------------------------------------------------------------
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose down -v 2>/dev/null || true
+          docker rm -f valheim-server 2>/dev/null || true
+
+  # -------------------------------------------------------------------------
+  # Build Verification (no server download)
+  # -------------------------------------------------------------------------
+  build-only:
+    name: Build Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: absolute-valheim-server:build-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify image structure
+        run: |
+          # Check that required scripts exist
+          docker run --rm absolute-valheim-server:build-test ls -la /opt/valheim/scripts/
+          
+          # Check that steamcmd is installed
+          docker run --rm absolute-valheim-server:build-test ls -la /opt/steamcmd/
+          
+          # Check supervisor config
+          docker run --rm absolute-valheim-server:build-test cat /etc/supervisor/conf.d/valheim.conf

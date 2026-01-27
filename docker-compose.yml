@@ -1,0 +1,79 @@
+# =============================================================================
+# Absolute Valheim Server - Docker Compose Configuration
+# =============================================================================
+# Usage:
+#   1. Copy .env.example to .env and configure your settings
+#   2. Run: docker compose up -d
+#   3. View logs: docker compose logs -f
+#   4. Stop: docker compose down
+# =============================================================================
+
+services:
+  valheim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: absolute-valheim-server:latest
+    container_name: valheim-server
+    
+    # Environment file for configuration
+    env_file:
+      - .env
+    
+    # Port mappings (UDP)
+    # 2456 - Game traffic
+    # 2457 - Steam server queries
+    # 2458 - Crossplay (only needed if CROSSPLAY=true)
+    ports:
+      - "${SERVER_PORT:-2456}:2456/udp"
+      - "${SERVER_PORT:-2456}:2457/udp"
+      - "2458:2458/udp"
+    
+    # Volume mounts
+    volumes:
+      # Persistent data: worlds, backups, admin lists
+      - valheim-config:/config
+      # Server files: cached between restarts for faster startup
+      - valheim-server:/opt/valheim/server
+    
+    # Graceful shutdown timeout (allows world save)
+    # Valheim needs time to save the world on shutdown
+    stop_grace_period: 2m
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    
+    # Allow setting thread priority (optional, improves performance)
+    cap_add:
+      - SYS_NICE
+    
+    # Logging configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Named volumes for data persistence
+volumes:
+  valheim-config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/config
+  
+  valheim-server:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/server

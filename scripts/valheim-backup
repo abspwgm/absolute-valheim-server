@@ -1,0 +1,201 @@
+#!/bin/bash
+# =============================================================================
+# Valheim Backup - Automated backup of world files
+# =============================================================================
+
+set -e
+
+# Source common functions
+source /opt/valheim/scripts/common
+
+# Parse arguments
+FORCE_BACKUP=false
+for arg in "$@"; do
+    case ${arg} in
+        --force)
+            FORCE_BACKUP=true
+            ;;
+    esac
+done
+
+# -----------------------------------------------------------------------------
+# Create backup
+# -----------------------------------------------------------------------------
+create_backup() {
+    local world_name
+    world_name=$(get_world_name)
+    
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    
+    local backup_name="valheim_${world_name}_${timestamp}"
+    local backup_dir="${BACKUPS_PATH}"
+    
+    log_info "=========================================="
+    log_info "Creating backup: ${backup_name}"
+    log_info "=========================================="
+    
+    # Ensure backup directory exists
+    mkdir -p "${backup_dir}"
+    
+    # Find world files
+    local world_db="${WORLDS_PATH}/${world_name}.db"
+    local world_fwl="${WORLDS_PATH}/${world_name}.fwl"
+    local world_db_old="${WORLDS_PATH}/${world_name}.db.old"
+    
+    if [[ ! -f "${world_db}" ]] && [[ ! -f "${world_fwl}" ]]; then
+        log_warn "No world files found for '${world_name}'"
+        log_warn "World path: ${WORLDS_PATH}"
+        ls -la "${WORLDS_PATH}" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Create temporary directory for backup
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    local backup_content_dir="${temp_dir}/${backup_name}"
+    mkdir -p "${backup_content_dir}"
+    
+    # Copy world files
+    local files_copied=0
+    
+    if [[ -f "${world_db}" ]]; then
+        cp "${world_db}" "${backup_content_dir}/"
+        log_info "Copied: ${world_name}.db"
+        files_copied=$((files_copied + 1))
+    fi
+    
+    if [[ -f "${world_fwl}" ]]; then
+        cp "${world_fwl}" "${backup_content_dir}/"
+        log_info "Copied: ${world_name}.fwl"
+        files_copied=$((files_copied + 1))
+    fi
+    
+    if [[ -f "${world_db_old}" ]]; then
+        cp "${world_db_old}" "${backup_content_dir}/"
+        log_info "Copied: ${world_name}.db.old"
+        files_copied=$((files_copied + 1))
+    fi
+    
+    # Also backup admin lists if they exist
+    for list in adminlist.txt bannedlist.txt permittedlist.txt; do
+        if [[ -f "${CONFIG_PATH}/${list}" ]]; then
+            cp "${CONFIG_PATH}/${list}" "${backup_content_dir}/"
+            log_info "Copied: ${list}"
+            files_copied=$((files_copied + 1))
+        fi
+    done
+    
+    if [[ ${files_copied} -eq 0 ]]; then
+        log_error "No files to backup"
+        rm -rf "${temp_dir}"
+        return 1
+    fi
+    
+    # Create backup (zip or tar)
+    local backup_use_zip="${BACKUPS_ZIP:-true}"
+    local backup_file
+    
+    if [[ "${backup_use_zip,,}" == "true" ]]; then
+        backup_file="${backup_dir}/${backup_name}.zip"
+        log_info "Creating ZIP backup: ${backup_file}"
+        cd "${temp_dir}"
+        zip -r "${backup_file}" "${backup_name}"
+    else
+        backup_file="${backup_dir}/${backup_name}.tar.gz"
+        log_info "Creating TAR backup: ${backup_file}"
+        cd "${temp_dir}"
+        tar -czf "${backup_file}" "${backup_name}"
+    fi
+    
+    # Cleanup temp directory
+    rm -rf "${temp_dir}"
+    
+    # Get backup size
+    local backup_size
+    backup_size=$(du -h "${backup_file}" | cut -f1)
+    
+    log_success "Backup created: ${backup_file} (${backup_size})"
+    
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Cleanup old backups
+# -----------------------------------------------------------------------------
+cleanup_old_backups() {
+    local max_age="${BACKUPS_MAX_AGE:-3}"
+    local max_count="${BACKUPS_MAX_COUNT:-0}"
+    local backup_dir="${BACKUPS_PATH}"
+    
+    log_info "Cleaning up old backups (max_age=${max_age} days, max_count=${max_count})"
+    
+    # Remove backups older than max_age days
+    if [[ ${max_age} -gt 0 ]]; then
+        local deleted_age=0
+        while IFS= read -r -d '' file; do
+            log_info "Removing old backup: $(basename "${file}")"
+            rm -f "${file}"
+            deleted_age=$((deleted_age + 1))
+        done < <(find "${backup_dir}" -maxdepth 1 -name "valheim_*.zip" -o -name "valheim_*.tar.gz" -mtime +${max_age} -print0 2>/dev/null)
+        
+        if [[ ${deleted_age} -gt 0 ]]; then
+            log_info "Removed ${deleted_age} backups older than ${max_age} days"
+        fi
+    fi
+    
+    # Keep only max_count backups
+    if [[ ${max_count} -gt 0 ]]; then
+        local backup_count
+        backup_count=$(find "${backup_dir}" -maxdepth 1 \( -name "valheim_*.zip" -o -name "valheim_*.tar.gz" \) 2>/dev/null | wc -l)
+        
+        if [[ ${backup_count} -gt ${max_count} ]]; then
+            local to_delete=$((backup_count - max_count))
+            log_info "Removing ${to_delete} excess backups (keeping ${max_count})"
+            
+            find "${backup_dir}" -maxdepth 1 \( -name "valheim_*.zip" -o -name "valheim_*.tar.gz" \) -printf '%T@ %p\n' 2>/dev/null \
+                | sort -n \
+                | head -n ${to_delete} \
+                | cut -d' ' -f2- \
+                | while read -r file; do
+                    log_info "Removing: $(basename "${file}")"
+                    rm -f "${file}"
+                done
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Main backup logic
+# -----------------------------------------------------------------------------
+main() {
+    # Check if backups are enabled
+    if ! is_backups_enabled && [[ "${FORCE_BACKUP}" != "true" ]]; then
+        log_info "Backups are disabled"
+        return 0
+    fi
+    
+    # Check if we should skip due to server being idle
+    local backup_if_idle="${BACKUPS_IF_IDLE:-false}"
+    if [[ "${backup_if_idle,,}" == "true" ]] && [[ "${FORCE_BACKUP}" != "true" ]]; then
+        if is_server_running && ! is_server_idle; then
+            log_info "Skipping backup while players are connected (BACKUPS_IF_IDLE=true)"
+            return 0
+        fi
+    fi
+    
+    # Create backup
+    if create_backup; then
+        # Cleanup old backups
+        cleanup_old_backups
+        log_success "Backup process completed"
+    else
+        log_error "Backup process failed"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Run main
+main

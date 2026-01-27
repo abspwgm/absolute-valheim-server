@@ -1,0 +1,61 @@
+[Unit]
+Description=Valheim Dedicated Server
+Documentation=https://github.com/fireaimready/absolute-valheim-server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# Service type
+Type=simple
+
+# User and group (create dedicated user: sudo useradd -m -s /bin/bash valheim)
+User=valheim
+Group=valheim
+
+# Working directory
+WorkingDirectory=/home/valheim/valheimserver
+
+# Environment file (copy .env.example to this location and configure)
+EnvironmentFile=/home/valheim/valheim.env
+
+# Required environment variables for Valheim
+Environment=SteamAppId=892970
+Environment=LD_LIBRARY_PATH=/home/valheim/valheimserver/linux64
+
+# Update server before starting (optional - remove if you want faster startups)
+ExecStartPre=/usr/games/steamcmd +@sSteamCmdForcePlatformType linux +force_install_dir /home/valheim/valheimserver +login anonymous +app_update 896660 validate +quit
+
+# Start the server
+# Note: Adjust paths and parameters according to your .env file
+ExecStart=/home/valheim/valheimserver/valheim_server.x86_64 \
+    -nographics \
+    -batchmode \
+    -port ${SERVER_PORT:-2456} \
+    -public ${SERVER_PUBLIC:-1} \
+    -name "${SERVER_NAME:-My Valheim Server}" \
+    -world "${WORLD_NAME:-Dedicated}" \
+    -password "${SERVER_PASS}" \
+    -savedir "/home/valheim/valheim_data"
+
+# Graceful shutdown (SIGINT allows world save)
+KillSignal=SIGINT
+
+# Wait up to 2 minutes for world save during shutdown
+TimeoutStopSec=120
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Resource limits (optional)
+# MemoryMax=4G
+# CPUQuota=200%
+
+# Security hardening (optional)
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ProtectHome=read-only
+# ReadWritePaths=/home/valheim
+
+[Install]
+WantedBy=multi-user.target

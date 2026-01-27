@@ -1,0 +1,195 @@
+# =============================================================================
+# Absolute Valheim Server - Docker Publish Workflow
+# =============================================================================
+# Builds and publishes the Docker image to Docker Hub after E2E tests pass.
+# Triggers automatically on E2E success, version tags, or manual dispatch.
+# =============================================================================
+
+name: Publish Docker Image
+
+on:
+  # Trigger after E2E tests complete successfully
+  workflow_run:
+    workflows: ["E2E Tests"]
+    types:
+      - completed
+    branches: [main]
+
+  # Trigger on version tags
+  push:
+    tags:
+      - 'v*.*.*'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (leave empty for "latest")'
+        required: false
+        default: ''
+        type: string
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Check if we should publish (E2E must have passed)
+  # ---------------------------------------------------------------------------
+  check:
+    name: Check E2E Status
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.check.outputs.should_publish }}
+    
+    steps:
+      - name: Check trigger conditions
+        id: check
+        run: |
+          # Always publish on manual dispatch or version tags
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_publish=true" >> $GITHUB_OUTPUT
+            echo "✅ Manual dispatch - will publish"
+            exit 0
+          fi
+          
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "should_publish=true" >> $GITHUB_OUTPUT
+            echo "✅ Version tag - will publish"
+            exit 0
+          fi
+          
+          # For workflow_run, check if E2E passed
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            if [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]]; then
+              echo "should_publish=true" >> $GITHUB_OUTPUT
+              echo "✅ E2E tests passed - will publish"
+            else
+              echo "should_publish=false" >> $GITHUB_OUTPUT
+              echo "❌ E2E tests did not pass - skipping publish"
+            fi
+            exit 0
+          fi
+          
+          echo "should_publish=false" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # Build and Publish Docker Image
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    needs: check
+    if: needs.check.outputs.should_publish == 'true'
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Also login to GitHub Container Registry (optional backup)
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Extract metadata for Docker tags
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            # Set latest tag for main branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_run' }}
+            # Version tags (v1.0.0 -> 1.0.0, 1.0, 1)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            # SHA tag for traceability
+            type=sha,prefix=sha-
+            # Manual tag input
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
+            # Branch name for non-main branches
+            type=ref,event=branch,enable=${{ github.ref != 'refs/heads/main' }}
+
+      # Build and push
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VCS_REF=${{ github.sha }}
+
+      # Output image info
+      - name: Image digest
+        run: |
+          echo "## 🐳 Published Docker Image" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.meta.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pull Commands" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# Docker Hub" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# GitHub Container Registry" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Update Docker Hub Description (optional)
+  # ---------------------------------------------------------------------------
+  update-description:
+    name: Update Docker Hub Description
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_run'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE_NAME }}
+          short-description: ${{ github.event.repository.description }}
+          readme-filepath: ./README.md
