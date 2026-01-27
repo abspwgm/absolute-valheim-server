@@ -4,10 +4,14 @@
 # Handles permissions, updates, and launches supervisor
 # =============================================================================
 
-set -e
+# Don't use set -e as SteamCMD often returns non-zero on warnings
+# We handle errors explicitly instead
 
 # Source common functions
-source /opt/valheim/scripts/common
+if ! source /opt/valheim/scripts/common; then
+    echo "[ERROR] Failed to source common functions"
+    exit 1
+fi
 
 log_info "=========================================="
 log_info "Absolute Valheim Server - Starting"
@@ -46,29 +50,34 @@ if is_update_on_start_enabled; then
     
     UPDATE_TIMEOUT="${UPDATE_TIMEOUT:-900}"
     log_info "Running SteamCMD update (timeout: ${UPDATE_TIMEOUT}s)"
+    log_info "Server path: ${VALHEIM_SERVER_PATH}"
+    log_info "Server binary: ${VALHEIM_SERVER_BINARY}"
     
-    # Run update with timeout
-    if timeout "${UPDATE_TIMEOUT}" /opt/valheim/scripts/valheim-updater --force; then
+    # Run update with timeout - don't exit on failure
+    set +e
+    timeout "${UPDATE_TIMEOUT}" /opt/valheim/scripts/valheim-updater --force
+    exit_code=$?
+    set -e
+    
+    if [[ ${exit_code} -eq 0 ]]; then
         log_success "Server update completed successfully"
-    else
-        exit_code=$?
-        if [[ ${exit_code} -eq 124 ]]; then
-            log_error "Server update timed out after ${UPDATE_TIMEOUT}s"
-            # Continue anyway if server files exist
-            if [[ -f "${VALHEIM_SERVER_BINARY}" ]]; then
-                log_warn "Continuing with existing server files"
-            else
-                log_error "No server files found, cannot continue"
-                exit 1
-            fi
+    elif [[ ${exit_code} -eq 124 ]]; then
+        log_error "Server update timed out after ${UPDATE_TIMEOUT}s"
+        # Continue anyway if server files exist
+        if [[ -f "${VALHEIM_SERVER_BINARY}" ]]; then
+            log_warn "Continuing with existing server files"
         else
-            log_error "Server update failed with exit code ${exit_code}"
-            if [[ -f "${VALHEIM_SERVER_BINARY}" ]]; then
-                log_warn "Continuing with existing server files"
-            else
-                log_error "No server files found, cannot continue"
-                exit 1
-            fi
+            log_error "No server files found, cannot continue"
+            exit 1
+        fi
+    else
+        log_warn "Server update returned exit code ${exit_code}"
+        if [[ -f "${VALHEIM_SERVER_BINARY}" ]]; then
+            log_warn "Continuing with existing server files"
+        else
+            log_error "No server files found, cannot continue"
+            log_error "Check SteamCMD logs at /var/log/valheim/steamcmd.log"
+            exit 1
         fi
     fi
 else

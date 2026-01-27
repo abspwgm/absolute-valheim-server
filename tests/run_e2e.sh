@@ -216,6 +216,11 @@ run_test() {
             log_error "Test failed: ${test_name} (exit code: ${exit_code}, ${duration}s)"
         fi
         
+        # Capture container logs on failure
+        log_info "=== Container Logs (last 100 lines) ==="
+        docker logs "${CONTAINER_NAME}" --tail 100 2>&1 || true
+        log_info "=== End Container Logs ==="
+        
         TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILED_TESTS+=("${test_name}")
         return 1
