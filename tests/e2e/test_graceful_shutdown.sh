@@ -88,7 +88,7 @@ test_graceful_shutdown() {
     # Restart container for subsequent tests
     log_info "Restarting container for subsequent tests"
     cd "$(dirname "${SCRIPT_DIR}")/.."
-    docker compose -f docker-compose.yml --env-file .env.test up -d
+    docker compose -f docker-compose.test.yml up -d
     
     # Wait for container to be running again
     local attempts=0
