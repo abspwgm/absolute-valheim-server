@@ -1,0 +1,63 @@
+# =============================================================================
+# Absolute Valheim Server - Docker Compose for E2E Testing
+# =============================================================================
+# This file is used for CI/CD testing. It avoids host port binding to prevent
+# conflicts when ports are already in use.
+# =============================================================================
+
+services:
+  valheim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: absolute-valheim-server:test
+    container_name: valheim-server
+    
+    # Environment file for configuration
+    env_file:
+      - .env.test
+    
+    # Don't bind to host ports in CI to avoid conflicts
+    # Tests will use docker exec and docker logs instead of network queries
+    expose:
+      - "2456/udp"
+      - "2457/udp"
+      - "2458/udp"
+    
+    # Volume mounts using named volumes (no host bind mounts for CI compatibility)
+    volumes:
+      - valheim-test-config:/config
+      - valheim-test-server:/opt/valheim/server
+    
+    # Graceful shutdown timeout (allows world save)
+    stop_grace_period: 2m
+    
+    # Don't restart in test mode
+    restart: "no"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    
+    # Allow setting thread priority (optional, improves performance)
+    cap_add:
+      - SYS_NICE
+    
+    # Logging configuration
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Named volumes for test isolation
+volumes:
+  valheim-test-config:
+    name: valheim-test-config
+  
+  valheim-test-server:
+    name: valheim-test-server
