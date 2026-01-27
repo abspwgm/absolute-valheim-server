@@ -116,9 +116,11 @@ jobs:
 
       - name: Cleanup any existing containers
         run: |
+          docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
           docker compose down -v 2>/dev/null || true
           docker rm -f valheim-server 2>/dev/null || true
           docker network prune -f 2>/dev/null || true
+          docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
 
       - name: Run E2E test suite
         id: e2e-tests
@@ -166,8 +168,10 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
+          docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
           docker compose down -v 2>/dev/null || true
           docker rm -f valheim-server 2>/dev/null || true
+          docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
 
   # -------------------------------------------------------------------------
   # Build Verification (no server download)
