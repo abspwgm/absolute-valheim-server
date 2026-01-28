@@ -393,15 +393,50 @@ deploy:
       memory: 4G
 ```
 
-## Running Tests
+## Testing
+
+### Running E2E Tests
+
+The project includes a comprehensive end-to-end test suite that validates server deployment, configuration, and operation.
 
 ```bash
 # Run all E2E tests
 ./tests/run_e2e.sh
 
-# Run specific test
+# Run a specific test
 ./tests/run_e2e.sh server_start
+./tests/run_e2e.sh server_query
+./tests/run_e2e.sh backup
+./tests/run_e2e.sh graceful_shutdown
+./tests/run_e2e.sh restart_update
 ```
+
+### Test Requirements
+
+- Docker and Docker Compose v2
+- Bash shell (Git Bash on Windows)
+- ~2GB free disk space for server files
+- ~4GB RAM for running the container
+
+### Test Suite
+
+| Test | Description |
+|------|-------------|
+| `server_start` | Verifies container starts and server binary launches |
+| `server_query` | Confirms server is listening on UDP ports 2456/2457 |
+| `backup` | Tests automatic backup creation and verification |
+| `graceful_shutdown` | Validates SIGINT handling and graceful shutdown |
+| `restart_update` | Checks server restart and update functionality |
+
+### Windows (Git Bash) Notes
+
+Tests use `MSYS_NO_PATHCONV=1` internally to prevent Git Bash path conversion issues. This is handled automatically by the test helpers.
+
+### Test Logs
+
+Test logs are saved to `data/logs/` for debugging:
+- `e2e_run_*.log` - Master log for full test run
+- `*_PASSED.log` / `*_FAILED.log` - Individual test logs
 
 ## CI/CD Pipeline
 

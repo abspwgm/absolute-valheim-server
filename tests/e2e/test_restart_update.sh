@@ -86,7 +86,7 @@ test_restart_update() {
         log_success "Server reconnected after restart"
     else
         # Check if server process is at least running
-        if docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
+        if MSYS_NO_PATHCONV=1 docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
             log_warn "Server process running but Steam connection not confirmed"
         else
             log_error "Server process not running after restart"

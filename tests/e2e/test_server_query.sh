@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # E2E Test: Server Query
-# Verifies that the server responds to Steam A2S queries
+# Verifies that the server is listening on expected UDP ports
 # =============================================================================
 
 set -e
@@ -16,123 +16,102 @@ TEST_NAME="server_query"
 # -----------------------------------------------------------------------------
 test_server_query() {
     log_test_start "${TEST_NAME}"
-    
+
     # Verify container is running
     assert_container_running "valheim-server"
-    
+
     # Wait for server to be ready first
     log_info "Waiting for server to be ready"
     if ! wait_for_log "valheim-server" "Game server connected" 300; then
         log_warn "Server may not be fully connected to Steam"
     fi
-    
+
     # Give server a moment to stabilize
     sleep 10
-    
+
     # Get the server port
     local server_port="${SERVER_PORT:-2456}"
     local query_port=$((server_port + 1))
-    
-    log_info "Testing UDP query port ${query_port}"
-    
-    # Method 1: Try using gamedig if available
-    if command -v gamedig &> /dev/null; then
-        log_info "Using gamedig for server query"
-        if gamedig --type valheim 127.0.0.1:${query_port} 2>/dev/null; then
-            log_success "Server responded to gamedig query"
+
+    log_info "Checking server is listening on UDP ports"
+
+    # Primary method: Check if server is listening using /proc/net/udp inside the container
+    # This doesn't require any external tools like ss or netstat
+    # Port numbers in /proc/net/udp are in hex format
+    local port_hex
+    local query_port_hex
+    printf -v port_hex "%04X" "${server_port}"
+    printf -v query_port_hex "%04X" "${query_port}"
+
+    local ports_ok=0
+    local attempts=0
+    local max_attempts=30
+
+    while [[ ${attempts} -lt ${max_attempts} ]]; do
+        local udp_sockets
+        udp_sockets=$(MSYS_NO_PATHCONV=1 docker exec valheim-server cat /proc/net/udp 2>/dev/null || echo "")
+
+        local port_2456_ok=false
+        local port_2457_ok=false
+
+        # Check for query port (2457) - this is the Steam query port
+        if echo "${udp_sockets}" | grep -qi ":${query_port_hex}"; then
+            port_2457_ok=true
+        fi
+
+        # For the game port (2456), it may not always show in /proc/net/udp
+        # Valheim uses it differently, so we primarily check the query port
+        if echo "${udp_sockets}" | grep -qi ":${port_hex}"; then
+            port_2456_ok=true
+        fi
+
+        # Success if query port is bound (main indicator that server is ready)
+        if [[ "${port_2457_ok}" == "true" ]]; then
+            log_success "Server is listening on query port ${query_port}"
+            if [[ "${port_2456_ok}" == "true" ]]; then
+                log_success "Server is listening on game port ${server_port}"
+            else
+                log_info "Game port ${server_port} not detected in /proc/net/udp (may be normal)"
+            fi
+            ports_ok=1
+            break
+        fi
+
+        sleep 2
+        attempts=$((attempts + 1))
+
+        if [[ $((attempts % 10)) -eq 0 ]]; then
+            log_info "Still waiting for ports... (${attempts}/${max_attempts})"
+        fi
+    done
+
+    if [[ ${ports_ok} -eq 1 ]]; then
+        # Verify server process is also running
+        if MSYS_NO_PATHCONV=1 docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
+            log_success "Server process is running and ports are bound"
             log_test_pass "${TEST_NAME}"
             return 0
         else
-            log_warn "gamedig query failed, trying alternative methods"
+            log_error "Ports are bound but server process not found"
+            log_test_fail "${TEST_NAME}"
+            return 1
         fi
     fi
-    
-    # Method 2: Try using python-valve if available
-    if command -v python3 &> /dev/null; then
-        log_info "Attempting Python A2S query"
-        
-        # Create temporary Python script for A2S query
-        local query_script=$(mktemp)
-        cat > "${query_script}" << 'PYEOF'
-#!/usr/bin/env python3
-import socket
-import sys
 
-def query_server(host, port):
-    """Send A2S_INFO query to server"""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(5)
-        
-        # A2S_INFO request
-        request = b'\xFF\xFF\xFF\xFF\x54Source Engine Query\x00'
-        sock.sendto(request, (host, port))
-        
-        response, addr = sock.recvfrom(4096)
-        sock.close()
-        
-        if response and len(response) > 4:
-            print(f"Received response from {addr}: {len(response)} bytes")
-            return True
-        return False
-    except socket.timeout:
-        print("Query timed out")
-        return False
-    except Exception as e:
-        print(f"Query error: {e}")
-        return False
+    # Fallback: If ports aren't detected but process is running and connected to Steam
+    log_warn "Could not detect ports via ss, checking process and logs"
 
-if __name__ == "__main__":
-    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 2457
-    sys.exit(0 if query_server(host, port) else 1)
-PYEOF
-        
-        if python3 "${query_script}" 127.0.0.1 ${query_port} 2>/dev/null; then
-            rm -f "${query_script}"
-            log_success "Server responded to A2S query"
-            log_test_pass "${TEST_NAME}"
-            return 0
-        fi
-        rm -f "${query_script}"
-        log_warn "Python A2S query failed"
-    fi
-    
-    # Method 3: Basic UDP connectivity check with netcat
-    log_info "Falling back to basic UDP check"
-    if command -v nc &> /dev/null; then
-        # Send a basic packet and check if port is open
-        if echo -n "" | nc -u -w 2 127.0.0.1 ${query_port} 2>/dev/null; then
-            log_info "UDP port ${query_port} is reachable"
-        fi
-    fi
-    
-    # Method 4: Check if server is listening on the port
-    log_info "Checking if server is listening on expected ports"
-    if docker exec valheim-server ss -uln 2>/dev/null | grep -q ":${server_port}"; then
-        log_info "Server is listening on port ${server_port}"
-    fi
-    
-    # Final verification: check server process and logs
-    if docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
+    if MSYS_NO_PATHCONV=1 docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
         if docker logs valheim-server 2>&1 | grep -q "Game server connected"; then
-            log_success "Server process is running and connected (query tools unavailable)"
+            log_success "Server process is running and connected to Steam"
             log_test_pass "${TEST_NAME}"
             return 0
         fi
     fi
-    
-    log_warn "Could not verify server query response"
-    log_warn "This may be due to missing query tools (gamedig, python3)"
-    
-    # If server is at least running, consider it a conditional pass
-    if docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
-        log_success "Server process is running (query verification skipped)"
-        log_test_pass "${TEST_NAME}"
-        return 0
-    fi
-    
-    log_error "Server query test failed"
+
+    log_error "Server is not listening on expected ports"
+    log_error "Expected ports: ${server_port} (game), ${query_port} (query)"
+    docker logs valheim-server --tail 50 2>&1 || true
     log_test_fail "${TEST_NAME}"
     return 1
 }

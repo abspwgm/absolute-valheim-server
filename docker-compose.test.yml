@@ -24,10 +24,11 @@ services:
       - "2457/udp"
       - "2458/udp"
     
-    # Volume mounts using named volumes (no host bind mounts for CI compatibility)
+    # Volume mounts - use bind mounts for local debugging, named volumes for CI
+    # Set USE_BIND_MOUNTS=true to use local ./data folder
     volumes:
-      - valheim-test-config:/config
-      - valheim-test-server:/opt/valheim/server
+      - ${USE_BIND_MOUNTS:+./data/config}${USE_BIND_MOUNTS:-valheim-test-config}:/config
+      - ${USE_BIND_MOUNTS:+./data/server}${USE_BIND_MOUNTS:-valheim-test-server}:/opt/valheim/server
     
     # Graceful shutdown timeout (allows world save)
     stop_grace_period: 2m

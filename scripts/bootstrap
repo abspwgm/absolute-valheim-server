@@ -142,8 +142,8 @@ fi
 echo "" >> "${CRON_FILE}"
 chmod 644 "${CRON_FILE}"
 
-# Start cron daemon
-service cron start || true
+# Note: Don't start cron here - supervisor will manage it
+# This prevents cron from entering FATAL state due to duplicate start attempts
 
 # -----------------------------------------------------------------------------
 # Start supervisor (manages server process)
