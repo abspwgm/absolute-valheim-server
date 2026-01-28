@@ -2,7 +2,7 @@
 # Absolute Valheim Server - Docker Compose Configuration
 # =============================================================================
 # Usage:
-#   1. Copy .env.example to .env and configure your settings
+#   1. Edit the environment variables below to customize your server
 #   2. Run: docker compose up -d
 #   3. View logs: docker compose logs -f
 #   4. Stop: docker compose down
@@ -15,34 +15,160 @@ services:
       dockerfile: Dockerfile
     image: absolute-valheim-server:latest
     container_name: valheim-server
-    
-    # Environment file for configuration
-    env_file:
-      - .env
-    
+
+    # =========================================================================
+    # SERVER CONFIGURATION
+    # =========================================================================
+    # Edit these values to customize your server
+    # =========================================================================
+    environment:
+      # -----------------------------------------------------------------------
+      # SERVER SETTINGS
+      # -----------------------------------------------------------------------
+
+      # Server name displayed in the server browser
+      - SERVER_NAME=My Valheim Server
+
+      # UDP port for game traffic (ports +1 and +2 are also used)
+      - SERVER_PORT=2456
+
+      # World name (filename without extension)
+      - WORLD_NAME=Dedicated
+
+      # Server password (minimum 5 characters, leave empty for no password)
+      - SERVER_PASS=
+
+      # Whether the server appears in the public server browser
+      - SERVER_PUBLIC=true
+
+      # Enable crossplay support for Xbox/Microsoft Store players
+      - CROSSPLAY=false
+
+      # Additional server arguments (advanced)
+      # Example: -preset hard -modifiers combat hard
+      - SERVER_ARGS=
+
+      # -----------------------------------------------------------------------
+      # UPDATE SETTINGS
+      # -----------------------------------------------------------------------
+
+      # Automatically update server files on container start/restart
+      - UPDATE_ON_START=true
+
+      # Maximum time (seconds) to wait for update to complete
+      - UPDATE_TIMEOUT=900
+
+      # Cron schedule for automatic updates during runtime (empty = disabled)
+      # Example: */30 * * * * (every 30 minutes)
+      - UPDATE_CRON=
+
+      # Only update when no players are connected
+      - UPDATE_IF_IDLE=true
+
+      # Additional SteamCMD arguments for updates
+      - STEAMCMD_ARGS=validate
+
+      # -----------------------------------------------------------------------
+      # BACKUP SETTINGS
+      # -----------------------------------------------------------------------
+
+      # Enable automatic backups
+      - BACKUPS_ENABLED=true
+
+      # Cron schedule for backups (default: every hour)
+      - BACKUPS_CRON=0 * * * *
+
+      # Backup storage directory (inside container)
+      - BACKUPS_DIRECTORY=/config/backups
+
+      # Maximum age of backups in days (0 = no limit)
+      - BACKUPS_MAX_AGE=3
+
+      # Maximum number of backups to keep (0 = no limit)
+      - BACKUPS_MAX_COUNT=0
+
+      # Compress backups using ZIP
+      - BACKUPS_ZIP=true
+
+      # Only backup when no players are connected
+      - BACKUPS_IF_IDLE=false
+
+      # -----------------------------------------------------------------------
+      # PERMISSION SETTINGS
+      # -----------------------------------------------------------------------
+
+      # User/Group ID to run the server as (match to host user for file perms)
+      - PUID=1000
+      - PGID=1000
+
+      # File creation umask
+      - PERMISSIONS_UMASK=022
+
+      # -----------------------------------------------------------------------
+      # USER MANAGEMENT (Space-separated SteamID64s)
+      # Find your SteamID64 at: https://steamid.io/
+      # -----------------------------------------------------------------------
+
+      # Server administrators
+      - ADMINLIST_IDS=
+
+      # Banned players
+      - BANNEDLIST_IDS=
+
+      # Permitted players (whitelist - only these can join if set)
+      - PERMITTEDLIST_IDS=
+
+      # -----------------------------------------------------------------------
+      # SYSTEM SETTINGS
+      # -----------------------------------------------------------------------
+
+      # Container timezone (https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)
+      - TZ=Etc/UTC
+
+      # -----------------------------------------------------------------------
+      # LOG FILTERING
+      # -----------------------------------------------------------------------
+
+      # Filter empty lines from server output
+      - LOG_FILTER_EMPTY=true
+
+      # Filter invalid UTF-8 characters
+      - LOG_FILTER_UTF8=true
+
+      # Additional patterns to filter (pipe-separated)
+      - LOG_FILTER_CONTAINS=
+
+    # =========================================================================
+    # NETWORK CONFIGURATION
+    # =========================================================================
     # Port mappings (UDP)
     # 2456 - Game traffic
     # 2457 - Steam server queries
     # 2458 - Crossplay (only needed if CROSSPLAY=true)
     ports:
-      - "${SERVER_PORT:-2456}:2456/udp"
-      - "${SERVER_PORT:-2456}:2457/udp"
+      - "2456:2456/udp"
+      - "2457:2457/udp"
       - "2458:2458/udp"
-    
-    # Volume mounts
+
+    # =========================================================================
+    # STORAGE CONFIGURATION
+    # =========================================================================
     volumes:
       # Persistent data: worlds, backups, admin lists
       - valheim-config:/config
       # Server files: cached between restarts for faster startup
       - valheim-server:/opt/valheim/server
-    
+
+    # =========================================================================
+    # CONTAINER SETTINGS (usually don't need to change)
+    # =========================================================================
+
     # Graceful shutdown timeout (allows world save)
-    # Valheim needs time to save the world on shutdown
     stop_grace_period: 2m
-    
+
     # Restart policy
     restart: unless-stopped
-    
+
     # Resource limits
     deploy:
       resources:
@@ -50,11 +176,11 @@ services:
           memory: 4G
         reservations:
           memory: 2G
-    
-    # Allow setting thread priority (optional, improves performance)
+
+    # Allow setting thread priority (improves performance)
     cap_add:
       - SYS_NICE
-    
+
     # Logging configuration
     logging:
       driver: json-file
@@ -62,10 +188,12 @@ services:
         max-size: "10m"
         max-file: "3"
 
-# Named volumes for data persistence
+# =============================================================================
+# VOLUMES
+# =============================================================================
 volumes:
   valheim-config:
     name: absolute-valheim-server_valheim-config
-  
+
   valheim-server:
     name: absolute-valheim-server_valheim-server
