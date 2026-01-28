@@ -43,7 +43,8 @@ test_server_start() {
             return 1
         fi
         
-        if docker exec valheim-server test -f /opt/valheim/server/valheim_server.x86_64 2>/dev/null; then
+        # Use bash -c to avoid Git Bash path conversion on Windows
+        if MSYS_NO_PATHCONV=1 docker exec valheim-server test -f /opt/valheim/server/valheim_server.x86_64 2>/dev/null; then
             log_info "Server binary found"
             break
         fi
@@ -65,7 +66,8 @@ test_server_start() {
         log_success "Server connected to Steam successfully"
     else
         # Check if server process is at least running
-        if docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
+        # Use bash -c to avoid Git Bash path conversion on Windows
+        if MSYS_NO_PATHCONV=1 docker exec valheim-server pgrep -f valheim_server.x86_64 > /dev/null 2>&1; then
             log_warn "Server process is running but 'Game server connected' not found"
             log_warn "This may be normal if Steam is slow to respond"
             # Consider this a pass if the process is running

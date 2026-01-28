@@ -7,7 +7,8 @@
 #   - With argument: runs specific test (e.g., ./tests/run_e2e.sh server_start)
 # =============================================================================
 
-set -e
+# Don't use set -e - we want to capture logs even on failures
+# set -e
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +21,8 @@ COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.test.yml"
 ENV_FILE="${PROJECT_ROOT}/.env.test"
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"  # 10 minutes default
 STARTUP_WAIT="${STARTUP_WAIT:-300}"  # 5 minutes for server startup
+USE_BIND_MOUNTS="${USE_BIND_MOUNTS:-false}"  # Use local data folder for debugging
+LOGS_DIR="${PROJECT_ROOT}/data/logs"
 
 # Colors
 RED='\033[0;31m'
@@ -34,30 +37,68 @@ TESTS_FAILED=0
 TESTS_SKIPPED=0
 FAILED_TESTS=()
 
+# Create logs directory immediately
+mkdir -p "${LOGS_DIR}"
+
+# Master log file for all output
+MASTER_LOG="${LOGS_DIR}/e2e_run_$(date +%Y%m%d_%H%M%S).log"
+
+# Error handler - captures state on unexpected errors
+on_error() {
+    local exit_code=$?
+    local line_no=$1
+    echo "[ERROR] Script failed at line ${line_no} with exit code ${exit_code}" | tee -a "${MASTER_LOG}"
+    echo "[ERROR] Capturing emergency logs..." | tee -a "${MASTER_LOG}"
+    
+    # Try to capture container logs
+    {
+        echo "========================================"
+        echo "EMERGENCY LOG CAPTURE"
+        echo "Failed at line: ${line_no}"
+        echo "Exit code: ${exit_code}"
+        echo "Timestamp: $(date)"
+        echo "========================================"
+        echo ""
+        echo "=== Docker PS ==="
+        docker ps -a 2>&1 || echo "docker ps failed"
+        echo ""
+        echo "=== Container Logs ==="
+        docker logs "${CONTAINER_NAME}" 2>&1 || echo "No container logs available"
+        echo ""
+        echo "=== Docker Compose Logs ==="
+        docker compose -f "${COMPOSE_FILE}" logs 2>&1 || echo "No compose logs available"
+    } >> "${LOGS_DIR}/emergency_$(date +%Y%m%d_%H%M%S).log" 2>&1
+    
+    echo "[ERROR] Emergency logs saved to ${LOGS_DIR}/" | tee -a "${MASTER_LOG}"
+}
+
+# Set up error trap
+trap 'on_error ${LINENO}' ERR
+
 # -----------------------------------------------------------------------------
-# Logging
+# Logging (all output goes to both console and master log)
 # -----------------------------------------------------------------------------
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $*"
+    echo -e "${BLUE}[INFO]${NC} $*" | tee -a "${MASTER_LOG}"
 }
 
 log_success() {
-    echo -e "${GREEN}[PASS]${NC} $*"
+    echo -e "${GREEN}[PASS]${NC} $*" | tee -a "${MASTER_LOG}"
 }
 
 log_error() {
-    echo -e "${RED}[FAIL]${NC} $*"
+    echo -e "${RED}[FAIL]${NC} $*" | tee -a "${MASTER_LOG}"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[SKIP]${NC} $*"
+    echo -e "${YELLOW}[SKIP]${NC} $*" | tee -a "${MASTER_LOG}"
 }
 
 log_header() {
-    echo ""
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}$*${NC}"
-    echo -e "${BLUE}========================================${NC}"
+    echo "" | tee -a "${MASTER_LOG}"
+    echo -e "${BLUE}========================================${NC}" | tee -a "${MASTER_LOG}"
+    echo -e "${BLUE}$*${NC}" | tee -a "${MASTER_LOG}"
+    echo -e "${BLUE}========================================${NC}" | tee -a "${MASTER_LOG}"
 }
 
 # -----------------------------------------------------------------------------
@@ -108,7 +149,10 @@ TZ=Etc/UTC
 EOF
     
     # Create data directories
-    mkdir -p data/config data/server
+    mkdir -p data/config data/server data/logs
+    
+    # Export USE_BIND_MOUNTS for docker-compose
+    export USE_BIND_MOUNTS
     
     # Build the container
     log_info "Building Docker image"
@@ -122,6 +166,11 @@ cleanup_test_environment() {
     
     cd "${PROJECT_ROOT}"
     
+    # Export logs before cleanup (in case we're exiting unexpectedly)
+    if docker inspect "${CONTAINER_NAME}" &>/dev/null; then
+        export_logs "cleanup_final"
+    fi
+    
     # Stop and remove containers
     docker compose -f "${COMPOSE_FILE}" down -v 2>/dev/null || true
     docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
@@ -129,8 +178,10 @@ cleanup_test_environment() {
     # Clean up test files
     rm -f "${ENV_FILE}"
     
-    # Remove test volumes
-    docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
+    # Remove test volumes (only if not using bind mounts)
+    if [[ "${USE_BIND_MOUNTS}" != "true" ]]; then
+        docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
+    fi
     
     log_success "Cleanup complete"
 }
@@ -174,6 +225,31 @@ get_container_logs() {
     docker logs "${CONTAINER_NAME}" 2>&1
 }
 
+export_logs() {
+    local test_name="${1:-final}"
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    local log_file="${LOGS_DIR}/${timestamp}_${test_name}.log"
+    
+    log_info "Exporting logs to ${log_file}"
+    mkdir -p "${LOGS_DIR}"
+    
+    {
+        echo "========================================"
+        echo "Test: ${test_name}"
+        echo "Timestamp: $(date)"
+        echo "========================================"
+        echo ""
+        echo "=== Container Logs ==="
+        docker logs "${CONTAINER_NAME}" 2>&1 || echo "No container logs available"
+        echo ""
+        echo "=== Container Inspect ==="
+        docker inspect "${CONTAINER_NAME}" 2>&1 || echo "Container not found"
+    } > "${log_file}" 2>&1
+    
+    log_success "Logs exported to ${log_file}"
+}
+
 # -----------------------------------------------------------------------------
 # Test Execution
 # -----------------------------------------------------------------------------
@@ -202,6 +278,10 @@ run_test() {
         local duration=$((end_time - start_time))
         
         log_success "Test passed: ${test_name} (${duration}s)"
+        
+        # Export logs for passed tests too (for debugging)
+        export_logs "${test_name}_PASSED"
+        
         TESTS_PASSED=$((TESTS_PASSED + 1))
         return 0
     else
@@ -220,6 +300,9 @@ run_test() {
         log_info "=== Container Logs (last 100 lines) ==="
         docker logs "${CONTAINER_NAME}" --tail 100 2>&1 || true
         log_info "=== End Container Logs ==="
+        
+        # Export full logs to file for debugging
+        export_logs "${test_name}_FAILED"
         
         TESTS_FAILED=$((TESTS_FAILED + 1))
         FAILED_TESTS+=("${test_name}")
@@ -258,6 +341,9 @@ run_all_tests() {
             run_test "${test}" || true  # Continue even if test fails
         done
     fi
+    
+    # Export final logs
+    export_logs "final_summary"
     
     # Print summary
     print_summary
@@ -301,6 +387,7 @@ print_summary() {
 # -----------------------------------------------------------------------------
 main() {
     log_header "Absolute Valheim Server - E2E Test Suite"
+    log_info "Master log: ${MASTER_LOG}"
     
     # Check dependencies
     if ! command -v docker &> /dev/null; then
@@ -314,7 +401,20 @@ main() {
     fi
     
     # Run tests
-    run_all_tests "$1"
+    local result=0
+    run_all_tests "$1" || result=$?
+    
+    log_info "Logs saved to: ${LOGS_DIR}/"
+    log_info "Master log: ${MASTER_LOG}"
+    
+    # Keep window open if running interactively
+    if [[ -t 0 ]]; then
+        echo ""
+        echo "Press Enter to close..."
+        read -r
+    fi
+    
+    return ${result}
 }
 
 # Run main

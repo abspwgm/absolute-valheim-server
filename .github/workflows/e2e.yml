@@ -131,21 +131,22 @@ jobs:
           STARTUP_WAIT: 300
 
       # ---------------------------------------------------------------------
-      # Collect Artifacts on Failure
+      # Collect Artifacts (always, for debugging)
       # ---------------------------------------------------------------------
-      - name: Collect container logs
-        if: failure()
+      - name: Collect test logs
+        if: always()
         run: |
           mkdir -p test-artifacts
           docker logs valheim-server > test-artifacts/container.log 2>&1 || true
           docker inspect valheim-server > test-artifacts/container-inspect.json 2>&1 || true
           cp .env test-artifacts/ || true
+          cp -r data/logs/* test-artifacts/ 2>/dev/null || true
 
       - name: Upload test artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-artifacts
+          name: e2e-test-logs
           path: test-artifacts/
           retention-days: 7
 

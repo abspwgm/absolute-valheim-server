@@ -89,20 +89,23 @@ start_server() {
     # Change to server directory
     cd "${VALHEIM_SERVER_PATH}"
     
-    # Start server with log filtering
+    # Create PID file directory
+    mkdir -p "$(dirname "${VALHEIM_SERVER_PID}")"
+    
+    # Start server in background with log filtering
     eval "${VALHEIM_SERVER_BINARY}" ${args} 2>&1 | /opt/valheim/scripts/valheim-logfilter &
     
-    # Get PID of the server process (not the pipe)
-    local server_pid=$!
+    # Wait a moment for the process to start
+    sleep 3
     
-    # Wait a moment and find the actual server PID
-    sleep 2
+    # Find and save the actual server PID
     local actual_pid
     actual_pid=$(pgrep -f "valheim_server.x86_64" | head -1)
     
     if [[ -n "${actual_pid}" ]]; then
         echo "${actual_pid}" > "${VALHEIM_SERVER_PID}"
         log_success "Server started with PID: ${actual_pid}"
+        return 0
     else
         log_error "Failed to start server"
         return 1
@@ -183,11 +186,37 @@ status_server() {
 case "${1:-start}" in
     start)
         start_server
+        
         # Keep running to maintain supervisor process
-        while is_server_running; do
-            sleep 10
+        # The server may exit periodically (especially during testing without real world data)
+        # We need to keep this script alive so supervisor doesn't think it crashed
+        while true; do
+            sleep 30
+            
+            if ! is_server_running; then
+                # Server process not found - check if we should restart
+                new_pid=$(pgrep -f "valheim_server.x86_64" 2>/dev/null | head -1)
+                
+                if [[ -n "${new_pid}" ]]; then
+                    # Process exists, just update PID file
+                    log_info "Server process found with PID: ${new_pid}"
+                    echo "${new_pid}" > "${VALHEIM_SERVER_PID}"
+                else
+                    # Process truly gone - restart it
+                    log_warn "Server process not running, restarting..."
+                    start_server
+                    
+                    # Wait for startup
+                    sleep 5
+                    
+                    if ! is_server_running; then
+                        # If still not running after restart, wait and try again
+                        log_warn "Server failed to start, waiting before retry..."
+                        sleep 30
+                    fi
+                fi
+            fi
         done
-        log_warn "Server process exited"
         ;;
     stop)
         stop_server

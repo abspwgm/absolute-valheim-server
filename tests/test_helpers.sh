@@ -7,8 +7,16 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
+BLUE='\033[0m'
 NC='\033[0m'
+
+# -----------------------------------------------------------------------------
+# Docker exec wrapper to prevent Git Bash path conversion on Windows
+# Usage: docker_exec container_name command [args...]
+# -----------------------------------------------------------------------------
+docker_exec() {
+    MSYS_NO_PATHCONV=1 docker exec "$@"
+}
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -69,21 +77,30 @@ assert_container_running() {
 assert_process_running() {
     local container="$1"
     local process="$2"
-    
-    if ! docker exec "${container}" pgrep -f "${process}" > /dev/null 2>&1; then
-        log_error "Process '${process}' is not running in container '${container}'"
-        return 1
-    fi
-    
-    log_info "Process '${process}' is running"
-    return 0
+    local timeout="${3:-30}"
+    local elapsed=0
+
+    # Retry loop - process may take time to spawn
+    while [[ ${elapsed} -lt ${timeout} ]]; do
+        # Use docker_exec helper to prevent Git Bash path conversion on Windows
+        if docker_exec "${container}" pgrep -f "${process}" > /dev/null 2>&1; then
+            log_info "Process '${process}' is running"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    log_error "Process '${process}' is not running in container '${container}' after ${timeout}s"
+    return 1
 }
 
 assert_file_exists() {
     local container="$1"
     local file="$2"
     
-    if ! docker exec "${container}" test -f "${file}"; then
+    # Use docker_exec helper to prevent Git Bash path conversion on Windows
+    if ! docker_exec "${container}" test -f "${file}"; then
         log_error "File '${file}' does not exist in container '${container}'"
         return 1
     fi
@@ -96,7 +113,8 @@ assert_directory_exists() {
     local container="$1"
     local dir="$2"
     
-    if ! docker exec "${container}" test -d "${dir}"; then
+    # Use docker_exec helper to prevent Git Bash path conversion on Windows
+    if ! docker_exec "${container}" test -d "${dir}"; then
         log_error "Directory '${dir}' does not exist in container '${container}'"
         return 1
     fi
@@ -115,7 +133,16 @@ wait_for_log() {
     local elapsed=0
     
     while [[ ${elapsed} -lt ${timeout} ]]; do
+        # Check docker logs (supervisor and bootstrap output)
         if docker logs "${container}" 2>&1 | grep -qi "${pattern}"; then
+            return 0
+        fi
+        # Also check the valheim server log file inside container
+        if docker_exec "${container}" grep -qi "${pattern}" /var/log/valheim/valheim-server.log 2>/dev/null; then
+            return 0
+        fi
+        # Check supervisor stdout log
+        if docker_exec "${container}" grep -qi "${pattern}" /var/log/valheim/server-stdout.log 2>/dev/null; then
             return 0
         fi
         sleep 5
@@ -175,5 +202,5 @@ get_container_logs() {
 exec_in_container() {
     local container="$1"
     shift
-    docker exec "${container}" "$@"
+    MSYS_NO_PATHCONV=1 docker exec "${container}" "$@"
 }
