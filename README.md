@@ -45,26 +45,22 @@ docker pull ghcr.io/fireaimready/absolute-valheim-server:latest
 
 ### 2. Configure Your Server
 
-```bash
-# Copy the example configuration
-cp .env.example .env
+Edit `docker-compose.yml` and customize the environment variables in the `environment:` section:
 
-# Edit with your settings
-nano .env  # or use your preferred editor
+```yaml
+environment:
+  - SERVER_NAME=My Valheim Server    # Your server's display name
+  - WORLD_NAME=Dedicated             # World save filename
+  - SERVER_PASS=yourpassword         # Password (min 5 characters)
+  # ... other settings
 ```
 
-**Required settings:**
+**Key settings to configure:**
 - `SERVER_NAME` - Your server's display name
 - `SERVER_PASS` - Server password (minimum 5 characters)
 - `WORLD_NAME` - Name of your world
 
-### 3. Create Data Directories
-
-```bash
-mkdir -p data/config data/server
-```
-
-### 4. Start the Server
+### 3. Start the Server
 
 ```bash
 docker compose up -d
@@ -106,6 +102,8 @@ Ensure these UDP ports are forwarded to your server:
 | 2458 | Crossplay | Only if `CROSSPLAY=true` |
 
 ## Configuration Reference
+
+All configuration is done via environment variables in `docker-compose.yml`.
 
 ### Server Settings
 
@@ -160,9 +158,9 @@ Ensure these UDP ports are forwarded to your server:
 Find your SteamID64 at [steamid.io](https://steamid.io/).
 
 **Example:**
-```env
-ADMINLIST_IDS=76561198012345678 76561198087654321
-BANNEDLIST_IDS=76561198011111111
+```yaml
+- ADMINLIST_IDS=76561198012345678 76561198087654321
+- BANNEDLIST_IDS=76561198011111111
 ```
 
 ### System Settings
@@ -200,9 +198,9 @@ BANNEDLIST_IDS=76561198011111111
    cp MyWorld.db MyWorld.fwl ./data/config/worlds_local/
    ```
 
-3. **Update `.env` to use your world:**
-   ```env
-   WORLD_NAME=MyWorld
+3. **Update `docker-compose.yml` to use your world:**
+   ```yaml
+   - WORLD_NAME=MyWorld
    ```
 
 4. **Restart the server:**
@@ -378,9 +376,9 @@ sudo systemctl restart valheim-server
 
 ### Update Timeout
 
-Increase `UPDATE_TIMEOUT` in `.env`:
-```env
-UPDATE_TIMEOUT=1800  # 30 minutes
+Increase `UPDATE_TIMEOUT` in `docker-compose.yml`:
+```yaml
+- UPDATE_TIMEOUT=1800  # 30 minutes
 ```
 
 ### High Memory Usage
