@@ -18,7 +18,6 @@ E2E_DIR="${SCRIPT_DIR}/e2e"
 # Test configuration
 CONTAINER_NAME="valheim-server"
 COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.test.yml"
-ENV_FILE="${PROJECT_ROOT}/.env.test"
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"  # 10 minutes default
 STARTUP_WAIT="${STARTUP_WAIT:-300}"  # 5 minutes for server startup
 USE_BIND_MOUNTS="${USE_BIND_MOUNTS:-false}"  # Use local data folder for debugging
@@ -110,7 +109,7 @@ cleanup_existing() {
     cd "${PROJECT_ROOT}"
     
     # Stop and remove any existing containers
-    docker compose -f docker-compose.yml --env-file .env.test down -v 2>/dev/null || true
+    docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
     docker compose down -v 2>/dev/null || true
     docker rm -f valheim-server 2>/dev/null || true
     docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
@@ -129,25 +128,7 @@ setup_test_environment() {
     cleanup_existing
     
     cd "${PROJECT_ROOT}"
-    
-    # Create test .env file
-    log_info "Creating test configuration"
-    cat > .env.test << EOF
-SERVER_NAME=E2E Test Server
-SERVER_PORT=2456
-WORLD_NAME=TestWorld
-SERVER_PASS=testpass123
-SERVER_PUBLIC=false
-CROSSPLAY=false
-UPDATE_ON_START=true
-UPDATE_TIMEOUT=600
-BACKUPS_ENABLED=true
-BACKUPS_CRON=* * * * *
-PUID=1000
-PGID=1000
-TZ=Etc/UTC
-EOF
-    
+
     # Create data directories
     mkdir -p data/config data/server data/logs
     
@@ -174,10 +155,7 @@ cleanup_test_environment() {
     # Stop and remove containers
     docker compose -f "${COMPOSE_FILE}" down -v 2>/dev/null || true
     docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
-    
-    # Clean up test files
-    rm -f "${ENV_FILE}"
-    
+
     # Remove test volumes (only if not using bind mounts)
     if [[ "${USE_BIND_MOUNTS}" != "true" ]]; then
         docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
