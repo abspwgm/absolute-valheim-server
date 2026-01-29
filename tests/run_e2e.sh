@@ -132,8 +132,13 @@ setup_test_environment() {
     # Create data directories
     mkdir -p data/config data/server data/logs
     
-    # Export USE_BIND_MOUNTS for docker-compose
-    export USE_BIND_MOUNTS
+    # Export USE_BIND_MOUNTS for docker-compose only if it's "true"
+    # When unset, docker-compose will use the default named volumes
+    if [[ "${USE_BIND_MOUNTS}" == "true" ]]; then
+        export USE_BIND_MOUNTS
+    else
+        unset USE_BIND_MOUNTS
+    fi
     
     # Build the container
     log_info "Building Docker image"
