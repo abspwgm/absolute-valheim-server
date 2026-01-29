@@ -9,14 +9,14 @@ A production-ready, containerized Valheim dedicated server with automatic update
 
 ## Features
 
-- 🐳 **Docker-based deployment** - Easy setup with Docker Compose
-- 🔄 **Auto-updates on startup** - Server files automatically update on container start/restart
-- 💾 **Automated backups** - Scheduled world backups with retention policies
-- 📝 **Log filtering** - Clean, readable logs with noise filtering
-- 🧪 **E2E tested** - Comprehensive automated test suite
-- 🔒 **Non-root execution** - Configurable UID/GID for security
-- 🖥️ **Systemd support** - Native Linux service for non-Docker deployments
-- ⚙️ **Fully configurable** - All settings via environment variables
+- **Docker-based deployment** - Easy setup with Docker Compose
+- **Auto-updates on startup** - Server files automatically update on container start/restart
+- **Automated backups** - Scheduled world backups with retention policies
+- **Log filtering** - Clean, readable logs with noise filtering
+- **E2E tested** - Comprehensive automated test suite
+- **Non-root execution** - Configurable UID/GID for security
+- **Systemd support** - Native Linux service for non-Docker deployments
+- **Fully configurable** - All settings via environment variables
 
 ## Quick Start
 
@@ -26,39 +26,55 @@ A production-ready, containerized Valheim dedicated server with automatic update
 - [Docker Compose](https://docs.docker.com/compose/install/) (v2.0+)
 - Minimum 4GB RAM, 2 CPU cores, 10GB disk space
 
-### 1. Clone the Repository
+### 1. Create a docker-compose.yml
 
-```bash
-git clone https://github.com/fireaimready/absolute-valheim-server.git
-cd absolute-valheim-server
-```
+Create a new directory for your server and add a `docker-compose.yml` file:
 
-**Or use the pre-built Docker image:**
+```yaml
+services:
+  valheim:
+    image: fireaimready/absolute-valheim-server:latest
+    container_name: valheim-server
 
-```bash
-# Docker Hub
-docker pull fireaimready/absolute-valheim-server:latest
+    environment:
+      # Server settings (customize these)
+      - SERVER_NAME=My Valheim Server
+      - WORLD_NAME=Dedicated
+      - SERVER_PASS=changeme123
+      - SERVER_PUBLIC=true
 
-# GitHub Container Registry
-docker pull ghcr.io/fireaimready/absolute-valheim-server:latest
+      # Update settings
+      - UPDATE_ON_START=true
+
+      # Backup settings
+      - BACKUPS_ENABLED=true
+      - BACKUPS_CRON=0 * * * *
+
+      # Permissions (match to your host user)
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+
+    ports:
+      - "2456:2456/udp"
+      - "2457:2457/udp"
+      - "2458:2458/udp"
+
+    volumes:
+      - ./data/config:/config
+      - ./data/server:/opt/valheim/server
+
+    stop_grace_period: 2m
+    restart: unless-stopped
 ```
 
 ### 2. Configure Your Server
 
-Edit `docker-compose.yml` and customize the environment variables in the `environment:` section:
+Edit the environment variables in your `docker-compose.yml`:
 
-```yaml
-environment:
-  - SERVER_NAME=My Valheim Server    # Your server's display name
-  - WORLD_NAME=Dedicated             # World save filename
-  - SERVER_PASS=yourpassword         # Password (min 5 characters)
-  # ... other settings
-```
-
-**Key settings to configure:**
 - `SERVER_NAME` - Your server's display name
 - `SERVER_PASS` - Server password (minimum 5 characters)
-- `WORLD_NAME` - Name of your world
+- `WORLD_NAME` - Name of your world save file
 
 ### 3. Start the Server
 
@@ -66,7 +82,7 @@ environment:
 docker compose up -d
 ```
 
-### 5. View Logs
+### 4. View Logs
 
 ```bash
 docker compose logs -f
@@ -97,8 +113,8 @@ Ensure these UDP ports are forwarded to your server:
 
 | Port | Purpose | Required |
 |------|---------|----------|
-| 2456 | Game traffic | ✅ Yes |
-| 2457 | Steam queries | ✅ Yes |
+| 2456 | Game traffic | Yes |
+| 2457 | Steam queries | Yes |
 | 2458 | Crossplay | Only if `CROSSPLAY=true` |
 
 ## Configuration Reference
@@ -179,10 +195,6 @@ Find your SteamID64 at [steamid.io](https://steamid.io/).
 | `/config` | Persistent data (worlds, backups, admin lists) |
 | `/opt/valheim/server` | Server files (can be cached) |
 
-**Local directory mapping (in docker-compose.yml):**
-- `./data/config` → `/config`
-- `./data/server` → `/opt/valheim/server`
-
 ## World Migration
 
 ### Importing an Existing World
@@ -192,7 +204,7 @@ Find your SteamID64 at [steamid.io](https://steamid.io/).
    - **Linux:** `~/.config/unity3d/IronGate/Valheim/worlds_local/`
    - **macOS:** `~/Library/Application Support/unity.IronGate.Valheim/worlds_local/`
 
-2. **Copy world files to the container volume:**
+2. **Copy world files to the server volume:**
    ```bash
    # Replace "MyWorld" with your actual world name
    cp MyWorld.db MyWorld.fwl ./data/config/worlds_local/
@@ -284,51 +296,6 @@ docker compose up -d  # Will update on start
 docker exec -it valheim-server bash
 ```
 
-## Systemd Installation (Non-Docker)
-
-For bare-metal Linux installations without Docker:
-
-### 1. Install Dependencies
-
-```bash
-# Ubuntu/Debian
-sudo apt update
-sudo apt install lib32gcc-s1 lib32stdc++6 libsdl2-2.0-0 steamcmd
-
-# Create valheim user
-sudo useradd -m -s /bin/bash valheim
-```
-
-### 2. Install Service
-
-```bash
-# Copy service file
-sudo cp systemd/valheim-server.service /etc/systemd/system/
-
-# Copy and configure environment
-sudo cp systemd/valheim.env.example /home/valheim/valheim.env
-sudo chown valheim:valheim /home/valheim/valheim.env
-sudo nano /home/valheim/valheim.env
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable valheim-server
-sudo systemctl start valheim-server
-```
-
-### 3. Manage Service
-
-```bash
-# Status
-sudo systemctl status valheim-server
-
-# Logs
-sudo journalctl -u valheim-server -f
-
-# Restart
-sudo systemctl restart valheim-server
-```
-
 ## Troubleshooting
 
 ### Server Won't Start
@@ -391,11 +358,28 @@ deploy:
       memory: 4G
 ```
 
-## Testing
+---
+
+## Building from Source
+
+If you want to build the image yourself or contribute to development:
+
+### Clone the Repository
+
+```bash
+git clone https://github.com/fireaimready/absolute-valheim-server.git
+cd absolute-valheim-server
+```
+
+### Build and Run
+
+```bash
+docker compose up -d --build
+```
 
 ### Running E2E Tests
 
-The project includes a comprehensive end-to-end test suite that validates server deployment, configuration, and operation.
+The project includes a comprehensive end-to-end test suite:
 
 ```bash
 # Run all E2E tests
@@ -426,35 +410,69 @@ The project includes a comprehensive end-to-end test suite that validates server
 | `graceful_shutdown` | Validates SIGINT handling and graceful shutdown |
 | `restart_update` | Checks server restart and update functionality |
 
-### Windows (Git Bash) Notes
+### CI/CD Pipeline
 
-Tests use `MSYS_NO_PATHCONV=1` internally to prevent Git Bash path conversion issues. This is handled automatically by the test helpers.
-
-### Test Logs
-
-Test logs are saved to `data/logs/` for debugging:
-- `e2e_run_*.log` - Master log for full test run
-- `*_PASSED.log` / `*_FAILED.log` - Individual test logs
-
-## CI/CD Pipeline
-
-This project uses GitHub Actions for continuous integration and deployment:
+This project uses GitHub Actions for continuous integration:
 
 1. **E2E Tests** ([e2e.yml](.github/workflows/e2e.yml)) - Runs on every push/PR
 2. **Publish** ([publish.yml](.github/workflows/publish.yml)) - Builds and publishes Docker image after E2E passes
 
-### Required Secrets for Publishing
-
-To enable Docker Hub publishing, add these secrets to your repository:
-
-| Secret | Description |
-|--------|-------------|
-| `DOCKERHUB_USERNAME` | Your Docker Hub username |
-| `DOCKERHUB_TOKEN` | Docker Hub access token ([create here](https://hub.docker.com/settings/security)) |
-
 The image is automatically published to:
 - **Docker Hub:** `docker.io/fireaimready/absolute-valheim-server`
 - **GitHub Container Registry:** `ghcr.io/fireaimready/absolute-valheim-server`
+
+---
+
+## Systemd Installation (Non-Docker)
+
+For bare-metal Linux installations without Docker:
+
+### 1. Install Dependencies
+
+```bash
+# Ubuntu/Debian
+sudo apt update
+sudo apt install lib32gcc-s1 lib32stdc++6 libsdl2-2.0-0 steamcmd
+
+# Create valheim user
+sudo useradd -m -s /bin/bash valheim
+```
+
+### 2. Install Service
+
+```bash
+# Clone repository
+git clone https://github.com/fireaimready/absolute-valheim-server.git
+cd absolute-valheim-server
+
+# Copy service file
+sudo cp systemd/valheim-server.service /etc/systemd/system/
+
+# Copy and configure environment
+sudo cp systemd/valheim.env.example /home/valheim/valheim.env
+sudo chown valheim:valheim /home/valheim/valheim.env
+sudo nano /home/valheim/valheim.env
+
+# Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable valheim-server
+sudo systemctl start valheim-server
+```
+
+### 3. Manage Service
+
+```bash
+# Status
+sudo systemctl status valheim-server
+
+# Logs
+sudo journalctl -u valheim-server -f
+
+# Restart
+sudo systemctl restart valheim-server
+```
+
+---
 
 ## Future Enhancements
 
