@@ -32,6 +32,10 @@ on:
         default: ''
         type: string
 
+# Least privilege for GITHUB_TOKEN; the publish job widens to packages: write.
+permissions:
+  contents: read
+
 env:
   REGISTRY: docker.io
   IMAGE_NAME: ${{ github.repository }}

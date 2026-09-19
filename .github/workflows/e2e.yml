@@ -23,6 +23,10 @@ on:
         default: false
         type: boolean
 
+# Least privilege for GITHUB_TOKEN; no job here writes to the repo.
+permissions:
+  contents: read
+
 env:
   VALHEIM_APP_ID: '896660'
   VALHEIM_VARIANT: vanilla
