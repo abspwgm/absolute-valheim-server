@@ -1,0 +1,235 @@
+#!/bin/bash
+# =============================================================================
+# Valheim Modcheck - Verifies that BepInEx injected and plugins loaded after a
+# server start, records the verdict, and applies MOD_FAILURE_POLICY.
+#
+# Usage: valheim-modcheck [--wait SECONDS] [--no-policy]
+#
+# Spawned detached (setsid) by valheim-server on every start of the bepinex
+# variant. Writes ${MODCHECK_STATUS_FILE} (JSON) consumed by healthcheck and
+# `valheim-dr status`:
+#
+#   status   ok | failed | pending | disabled
+#   reason   loaded | not_loaded | loader_errors | plugin_errors |
+#            plugin_count | safe_mode | bepinex_disabled | not_bepinex_variant |
+#            server_not_running
+#
+# Verdict rules (see docs/Disaster-Response.md):
+#   - LogOutput.log must contain "Chainloader startup complete" within --wait.
+#   - Any [Error]/[Fatal] line from the BepInEx loader itself => failed.
+#   - MODCHECK_EXPECT_PLUGINS=N: fewer than N "plugins to load" => failed.
+#   - MODCHECK_FAIL_ON_ANY_ERROR=true: any plugin [Error]/[Fatal] => failed.
+#
+# Policy on failed (MOD_FAILURE_POLICY):
+#   hold      (default) keep running as-is, mark unhealthy when MODCHECK_STRICT.
+#   rollback  restore the latest DR snapshot (server files + world) and set
+#             UPDATE_HOLD. Skipped when a hold is already active (loop guard).
+#   vanilla   engage SAFE_MODE (start without BepInEx) after a snapshot.
+#             World-risky: mod-added objects are dropped on next save.
+# =============================================================================
+
+if ! source /opt/valheim/scripts/common; then
+    echo "[ERROR] Failed to source common functions"
+    exit 1
+fi
+
+WAIT_SECONDS="${MODCHECK_TIMEOUT:-300}"
+APPLY_POLICY=true
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --wait)
+            WAIT_SECONDS="${2:-300}"
+            shift 2
+            ;;
+        --no-policy)
+            APPLY_POLICY=false
+            shift
+            ;;
+        *)
+            echo "Usage: $0 [--wait SECONDS] [--no-policy]"
+            exit 1
+            ;;
+    esac
+done
+
+mkdir -p "$(dirname "${MODCHECK_STATUS_FILE}")"
+echo $$ > "${MODCHECK_PID_FILE}"
+
+# -----------------------------------------------------------------------------
+# Write the status document atomically
+# -----------------------------------------------------------------------------
+write_status() {
+    local status="$1" reason="$2"
+    local plugins_to_load="${3:-0}" loader_errors="${4:-0}" total_errors="${5:-0}"
+    local action_taken="${6:-none}"
+
+    jq -n \
+        --arg status "${status}" \
+        --arg reason "${reason}" \
+        --arg variant "${VALHEIM_VARIANT}" \
+        --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg build_id "$(get_installed_build_id)" \
+        --arg bepinex_version "$(get_bepinex_installed_version)" \
+        --arg policy "${MOD_FAILURE_POLICY:-hold}" \
+        --arg action_taken "${action_taken}" \
+        --argjson bepinex_enabled "$(is_bepinex_enabled && echo true || echo false)" \
+        --argjson safe_mode "$(is_safe_mode && echo true || echo false)" \
+        --argjson strict "$(is_true "${MODCHECK_STRICT:-false}" && echo true || echo false)" \
+        --argjson plugins_to_load "${plugins_to_load}" \
+        --argjson loader_errors "${loader_errors}" \
+        --argjson total_errors "${total_errors}" \
+        --argjson expect_plugins "${MODCHECK_EXPECT_PLUGINS:-null}" \
+        '{
+            status: $status, reason: $reason, variant: $variant,
+            bepinex_enabled: $bepinex_enabled, safe_mode: $safe_mode, strict: $strict,
+            bepinex_version: $bepinex_version, build_id: $build_id,
+            plugins_to_load: $plugins_to_load, expect_plugins: $expect_plugins,
+            loader_errors: $loader_errors, total_errors: $total_errors,
+            policy: $policy, action_taken: $action_taken, checked_at: $checked_at
+        }' > "${MODCHECK_STATUS_FILE}.tmp" && mv "${MODCHECK_STATUS_FILE}.tmp" "${MODCHECK_STATUS_FILE}"
+}
+
+# -----------------------------------------------------------------------------
+# Apply MOD_FAILURE_POLICY; sets ACTION_TAKEN (not echoed: log lines share stdout)
+# -----------------------------------------------------------------------------
+ACTION_TAKEN="none"
+apply_policy() {
+    local policy="${MOD_FAILURE_POLICY:-hold}"
+    ACTION_TAKEN="none"
+
+    if [[ "${APPLY_POLICY}" != "true" ]]; then
+        return
+    fi
+
+    case "${policy,,}" in
+        rollback)
+            if is_update_hold; then
+                log_warn "MOD_FAILURE_POLICY=rollback but UPDATE_HOLD is already set; not rolling back again (loop guard)"
+                ACTION_TAKEN="hold"
+                return
+            fi
+            if ! /opt/valheim/scripts/valheim-dr has-snapshot; then
+                log_warn "MOD_FAILURE_POLICY=rollback but no DR snapshot exists; holding instead"
+                /opt/valheim/scripts/valheim-dr hold "modcheck failed, no snapshot to roll back to" > /dev/null
+                ACTION_TAKEN="hold"
+                return
+            fi
+            log_warn "MOD_FAILURE_POLICY=rollback: restoring latest DR snapshot"
+            # Detach: restore stops/starts the server via supervisor.
+            setsid /opt/valheim/scripts/valheim-dr restore latest --reason "modcheck failed" > /dev/null 2>&1 < /dev/null &
+            ACTION_TAKEN="rollback"
+            ;;
+        vanilla)
+            if is_safe_mode; then
+                ACTION_TAKEN="hold"
+                return
+            fi
+            log_warn "MOD_FAILURE_POLICY=vanilla: engaging SAFE_MODE (BepInEx disabled) after snapshot"
+            setsid /opt/valheim/scripts/valheim-dr safe-mode on --reason "modcheck failed" > /dev/null 2>&1 < /dev/null &
+            ACTION_TAKEN="safe_mode"
+            ;;
+        hold|*)
+            /opt/valheim/scripts/valheim-dr hold "modcheck failed" > /dev/null 2>&1 || true
+            ACTION_TAKEN="hold"
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+    if ! is_bepinex_variant; then
+        write_status disabled not_bepinex_variant
+        return 0
+    fi
+
+    if is_safe_mode; then
+        log_warn "Modcheck: SAFE_MODE engaged; BepInEx not injected (server runs vanilla)"
+        write_status disabled safe_mode
+        return 0
+    fi
+
+    if ! is_bepinex_enabled; then
+        write_status disabled bepinex_disabled
+        return 0
+    fi
+
+    write_status pending waiting
+    log_info "Modcheck: waiting up to ${WAIT_SECONDS}s for BepInEx chainloader"
+
+    local elapsed=0 interval=5 loaded=false
+    while [[ ${elapsed} -lt ${WAIT_SECONDS} ]]; do
+        if [[ -f "${BEPINEX_LOG_FILE}" ]] && grep -q "Chainloader startup complete" "${BEPINEX_LOG_FILE}" 2>/dev/null; then
+            loaded=true
+            break
+        fi
+        if ! is_server_running; then
+            # Give the supervisor loop a chance to respawn; if it stays down,
+            # report that rather than blaming BepInEx.
+            sleep "${interval}"
+            elapsed=$((elapsed + interval))
+            if ! is_server_running; then
+                # Deliberate stop (docker stop, supervisor restart, DR restore in
+                # progress): supervisor no longer wants the program running.
+                # Record it, but never fire a policy into a shutdown.
+                if ! is_supervisor_running || ! supervisor_ctl status valheim-server 2>/dev/null | grep -qE 'RUNNING|STARTING'; then
+                    log_warn "Modcheck: server stopped by operator/supervisor during check; no verdict"
+                    write_status failed server_not_running 0 0 0 none
+                    return 1
+                fi
+                log_error "Modcheck: server process not running although supervisor expects it"
+                write_status failed server_not_running
+                apply_policy
+                write_status failed server_not_running 0 0 0 "${ACTION_TAKEN}"
+                return 1
+            fi
+            continue
+        fi
+        sleep "${interval}"
+        elapsed=$((elapsed + interval))
+    done
+
+    local plugins_to_load=0 loader_errors=0 total_errors=0
+    if [[ -f "${BEPINEX_LOG_FILE}" ]]; then
+        plugins_to_load=$(grep -oE '[0-9]+ plugins? to load' "${BEPINEX_LOG_FILE}" | grep -oE '^[0-9]+' | tail -1)
+        plugins_to_load="${plugins_to_load:-0}"
+        loader_errors=$(grep -cE '^\[(Error|Fatal)[[:space:]]*:[[:space:]]*BepInEx\]' "${BEPINEX_LOG_FILE}" || true)
+        total_errors=$(grep -cE '^\[(Error|Fatal)[[:space:]]*:' "${BEPINEX_LOG_FILE}" || true)
+    fi
+
+    local verdict="ok" reason="loaded"
+
+    if [[ "${loaded}" != "true" ]]; then
+        verdict="failed"; reason="not_loaded"
+        log_error "Modcheck: BepInEx chainloader did not complete within ${WAIT_SECONDS}s"
+        log_error "Modcheck: $( [[ -f "${BEPINEX_LOG_FILE}" ]] && echo "LogOutput.log present but incomplete" || echo "no LogOutput.log written - doorstop did not inject")"
+    elif [[ ${loader_errors} -gt 0 ]]; then
+        verdict="failed"; reason="loader_errors"
+        log_error "Modcheck: ${loader_errors} BepInEx loader error(s):"
+        grep -E '^\[(Error|Fatal)[[:space:]]*:[[:space:]]*BepInEx\]' "${BEPINEX_LOG_FILE}" | head -20
+    elif [[ -n "${MODCHECK_EXPECT_PLUGINS:-}" ]] && [[ ${plugins_to_load} -lt ${MODCHECK_EXPECT_PLUGINS} ]]; then
+        verdict="failed"; reason="plugin_count"
+        log_error "Modcheck: expected >= ${MODCHECK_EXPECT_PLUGINS} plugins, BepInEx found ${plugins_to_load}"
+    elif is_true "${MODCHECK_FAIL_ON_ANY_ERROR:-false}" && [[ ${total_errors} -gt 0 ]]; then
+        verdict="failed"; reason="plugin_errors"
+        log_error "Modcheck: ${total_errors} error line(s) in BepInEx log (MODCHECK_FAIL_ON_ANY_ERROR=true)"
+        grep -E '^\[(Error|Fatal)[[:space:]]*:' "${BEPINEX_LOG_FILE}" | head -20
+    fi
+
+    if [[ "${verdict}" == "ok" ]]; then
+        log_success "Modcheck: BepInEx $(get_bepinex_installed_version) loaded, ${plugins_to_load} plugin(s), ${total_errors} error line(s)"
+        write_status ok loaded "${plugins_to_load}" "${loader_errors}" "${total_errors}"
+        return 0
+    fi
+
+    write_status failed "${reason}" "${plugins_to_load}" "${loader_errors}" "${total_errors}"
+    apply_policy
+    write_status failed "${reason}" "${plugins_to_load}" "${loader_errors}" "${total_errors}" "${ACTION_TAKEN}"
+    log_error "Modcheck: FAILED (${reason}); policy=${MOD_FAILURE_POLICY:-hold} action=${ACTION_TAKEN}"
+    log_error "Modcheck: see docs/Disaster-Response.md - 'valheim-dr status' for details"
+    return 1
+}
+
+main

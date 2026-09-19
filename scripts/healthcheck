@@ -24,6 +24,27 @@ if command -v nc &> /dev/null; then
     fi
 fi
 
+# BepInEx variant: with MODCHECK_STRICT, a failed mod-load verification makes the
+# container unhealthy even though the process is up (see docs/Disaster-Response.md).
+if [[ "${VALHEIM_VARIANT:-vanilla}" == "bepinex" ]] && [[ "${MODCHECK_STRICT:-false}" == "true" ]]; then
+    MODCHECK_FILE="${MODCHECK_STATUS_FILE:-/var/run/valheim/modcheck.json}"
+    if [[ -f "${MODCHECK_FILE}" ]]; then
+        MODCHECK_RESULT=$(jq -r '.status // "unknown"' "${MODCHECK_FILE}" 2>/dev/null || echo "unknown")
+        MODCHECK_REASON=$(jq -r '.reason // ""' "${MODCHECK_FILE}" 2>/dev/null || echo "")
+        case "${MODCHECK_RESULT}" in
+            failed)
+                echo "UNHEALTHY: BepInEx modcheck failed (${MODCHECK_REASON}); policy=${MOD_FAILURE_POLICY:-hold}. Run 'valheim-dr status'"
+                exit 1
+                ;;
+            disabled)
+                echo "WARNING: BepInEx not active (${MODCHECK_REASON}); server is running vanilla"
+                ;;
+            *)
+                ;;
+        esac
+    fi
+fi
+
 # Check if we've seen the "Game server connected" message recently
 LOG_FILE="/var/log/valheim/valheim-server.log"
 if [[ -f "${LOG_FILE}" ]]; then

@@ -2,9 +2,12 @@
 # =============================================================================
 # E2E Test Runner - Executes all end-to-end tests
 # =============================================================================
-# Usage: ./tests/run_e2e.sh [test_name]
-#   - No arguments: runs all tests
+# Usage: [VALHEIM_VARIANT=vanilla|bepinex] ./tests/run_e2e.sh [test_name]
+#   - No arguments: runs all tests for the selected variant
 #   - With argument: runs specific test (e.g., ./tests/run_e2e.sh server_start)
+#   - VALHEIM_VARIANT picks the artifact under test (default: vanilla). The
+#     bepinex variant runs the shared suite plus the mod-load and disaster
+#     drills (see docs/Disaster-Response.md).
 # =============================================================================
 
 # Don't use set -e - we want to capture logs even on failures
@@ -22,6 +25,17 @@ TEST_TIMEOUT="${TEST_TIMEOUT:-600}"  # 10 minutes default
 STARTUP_WAIT="${STARTUP_WAIT:-300}"  # 5 minutes for server startup
 USE_BIND_MOUNTS="${USE_BIND_MOUNTS:-false}"  # Use local data folder for debugging
 LOGS_DIR="${PROJECT_ROOT}/data/logs"
+
+# Artifact under test. Exported so docker compose (build target / image tag) and
+# every test script that re-runs `docker compose up` see the same variant.
+VALHEIM_VARIANT="${VALHEIM_VARIANT:-vanilla}"
+case "${VALHEIM_VARIANT}" in
+    vanilla|bepinex) ;;
+    *) echo "[FAIL] VALHEIM_VARIANT must be 'vanilla' or 'bepinex' (got '${VALHEIM_VARIANT}')"; exit 1 ;;
+esac
+export VALHEIM_VARIANT
+# Keep the bepinex disaster drill inside TEST_TIMEOUT
+export MODCHECK_TIMEOUT="${MODCHECK_TIMEOUT:-180}"
 
 # Colors
 RED='\033[0;31m'
@@ -132,16 +146,21 @@ setup_test_environment() {
     # Create data directories
     mkdir -p data/config data/server data/logs
     
-    # Export USE_BIND_MOUNTS for docker-compose only if it's "true"
-    # When unset, docker-compose will use the default named volumes
+    # Bind mounts vs named volumes. docker-compose.test.yml reads the two
+    # TEST_*_VOLUME variables; exported so test scripts that re-run
+    # `docker compose up` (graceful_shutdown) mount the same places.
     if [[ "${USE_BIND_MOUNTS}" == "true" ]]; then
         export USE_BIND_MOUNTS
+        export TEST_CONFIG_VOLUME="./data/config"
+        export TEST_SERVER_VOLUME="./data/server"
+        log_info "Using bind mounts: ./data/config, ./data/server"
     else
-        unset USE_BIND_MOUNTS
+        unset USE_BIND_MOUNTS TEST_CONFIG_VOLUME TEST_SERVER_VOLUME
+        log_info "Using named volumes: valheim-test-config, valheim-test-server"
     fi
     
     # Build the container
-    log_info "Building Docker image"
+    log_info "Building Docker image (variant: ${VALHEIM_VARIANT})"
     docker compose -f "${COMPOSE_FILE}" build --no-cache
     
     log_success "Test environment ready"
@@ -296,13 +315,31 @@ run_test() {
 # -----------------------------------------------------------------------------
 # Test Suite
 # -----------------------------------------------------------------------------
+# Shared suite: every artifact must pass these (vanilla's CI gate is exactly this list)
 ALL_TESTS=(
     "server_start"
     "server_query"
     "backup"
     "graceful_shutdown"
     "restart_update"
+    "dr_snapshot_restore"
 )
+
+# Modded artifact: prove BepInEx injects, then run the disaster drills last so a
+# drill failure cannot poison the shared tests.
+if [[ "${VALHEIM_VARIANT}" == "bepinex" ]]; then
+    ALL_TESTS=(
+        "server_start"
+        "bepinex_loaded"
+        "server_query"
+        "backup"
+        "graceful_shutdown"
+        "restart_update"
+        "dr_snapshot_restore"
+        "bepinex_safe_mode"
+        "bepinex_disaster_drill"
+    )
+fi
 
 run_all_tests() {
     local specific_test="$1"
@@ -325,8 +362,16 @@ run_all_tests() {
         done
     fi
     
-    # Export final logs
+    # Export final logs (+ DR status and BepInEx log for the modded artifact)
     export_logs "final_summary"
+    if [[ "${VALHEIM_VARIANT}" == "bepinex" ]]; then
+        MSYS_NO_PATHCONV=1 docker exec "${CONTAINER_NAME}" /opt/valheim/scripts/valheim-dr status \
+            > "${LOGS_DIR}/dr_status.json" 2>/dev/null || true
+        MSYS_NO_PATHCONV=1 docker exec "${CONTAINER_NAME}" cat /opt/valheim/server/BepInEx/LogOutput.log \
+            > "${LOGS_DIR}/bepinex_LogOutput.log" 2>/dev/null || true
+        MSYS_NO_PATHCONV=1 docker exec "${CONTAINER_NAME}" cat /var/log/valheim/modcheck.log \
+            > "${LOGS_DIR}/modcheck.log" 2>/dev/null || true
+    fi
     
     # Print summary
     print_summary
@@ -369,8 +414,9 @@ print_summary() {
 # Main
 # -----------------------------------------------------------------------------
 main() {
-    log_header "Absolute Valheim Server - E2E Test Suite"
+    log_header "Absolute Valheim Server - E2E Test Suite (${VALHEIM_VARIANT})"
     log_info "Master log: ${MASTER_LOG}"
+    log_info "Variant under test: ${VALHEIM_VARIANT}"
     
     # Check dependencies
     if ! command -v docker &> /dev/null; then

@@ -3,9 +3,13 @@
 # =============================================================================
 # Usage:
 #   1. Edit the environment variables below to customize your server
-#   2. Run: docker compose up -d
+#   2. Run: docker compose up -d                       (vanilla artifact)
+#      or:  VALHEIM_VARIANT=bepinex docker compose up -d --build   (modded artifact)
 #   3. View logs: docker compose logs -f
 #   4. Stop: docker compose down
+#
+# Running BOTH servers side by side on one host (e.g. the Proxmox VM)?
+# See deploy/proxmox/docker-compose.yml and docs/Proxmox-UniFi-Deployment.md.
 # =============================================================================
 
 services:
@@ -13,7 +17,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: absolute-valheim-server:latest
+      # vanilla (default) or bepinex - see README "Image variants"
+      target: ${VALHEIM_VARIANT:-vanilla}
+    image: absolute-valheim-server:${VALHEIM_VARIANT:-vanilla}
     container_name: valheim-server
 
     # =========================================================================
@@ -137,6 +143,40 @@ services:
 
       # Additional patterns to filter (pipe-separated)
       - LOG_FILTER_CONTAINS=
+
+      # -----------------------------------------------------------------------
+      # DISASTER RESPONSE (docs/Disaster-Response.md)
+      # Image defaults: vanilla = unarmed, bepinex = armed. Uncomment to override.
+      # -----------------------------------------------------------------------
+
+      # Snapshot server files + world before a Steam update actually changes the build
+      # - DR_SNAPSHOT_BEFORE_UPDATE=true
+
+      # How many snapshots to keep (each is roughly the server install, ~1GB)
+      # - DR_KEEP_SNAPSHOTS=2
+
+      # -----------------------------------------------------------------------
+      # BEPINEX (bepinex variant only; ignored by vanilla)
+      # Plugins:  ./data/config/bepinex/plugins   Config: ./data/config/bepinex/config
+      # -----------------------------------------------------------------------
+
+      # Inject BepInEx (set false to run the modded image as vanilla without rebuilding)
+      # - BEPINEX_ENABLED=true
+
+      # Fail the container health check when mods did not load
+      # - MODCHECK_STRICT=true
+
+      # Seconds to wait for the BepInEx chainloader after each server start
+      # - MODCHECK_TIMEOUT=300
+
+      # Fail when fewer than N plugins load (set to your installed mod count)
+      # - MODCHECK_EXPECT_PLUGINS=
+
+      # Also fail on any plugin-level [Error]/[Fatal] line (default: loader errors only)
+      # - MODCHECK_FAIL_ON_ANY_ERROR=false
+
+      # What to do when mods fail to load: hold | rollback | vanilla
+      # - MOD_FAILURE_POLICY=hold
 
     # =========================================================================
     # NETWORK CONFIGURATION

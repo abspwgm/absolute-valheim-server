@@ -1,0 +1,482 @@
+#!/bin/bash
+# =============================================================================
+# Valheim DR - Disaster-response operator CLI (both variants; armed on bepinex)
+#
+# Usage: valheim-dr <command> [args]
+#
+#   status                         JSON: variant, builds, BepInEx, hold, modcheck, snapshots
+#   snapshot [label] [--reason T]  Snapshot server files + world + BepInEx state
+#   list                           List snapshots (id, label, build, created)
+#   has-snapshot                   Exit 0 if at least one snapshot exists
+#   restore <id|latest> [--server-only|--world-only] [--reason T]
+#                                  Stop server, replace files from snapshot, set
+#                                  UPDATE_HOLD, start server
+#   prune [N]                      Keep newest N snapshots (default DR_KEEP_SNAPSHOTS)
+#   hold [reason]                  Block Steam updates (survives restarts)
+#   release                        Lift the update hold
+#   safe-mode on|off [--reason T]  Start without BepInEx (on snapshots first)
+#   restart                        Restart the server process via supervisor
+#   modcheck                       Run mod-load verification now (no policy)
+#
+# Runbook: docs/Disaster-Response.md
+# =============================================================================
+
+if ! source /opt/valheim/scripts/common; then
+    echo "[ERROR] Failed to source common functions"
+    exit 1
+fi
+
+mkdir -p "${DR_SNAPSHOTS_PATH}"
+
+# -----------------------------------------------------------------------------
+# Snapshot helpers
+# -----------------------------------------------------------------------------
+# Newest first by the manifest's mtime (sub-second), not by directory name:
+# two snapshots taken within the same second would otherwise be ordered by
+# their label ("e2e" before "canary"), and `restore latest` would pick wrong.
+snapshot_dirs_newest_first() {
+    find "${DR_SNAPSHOTS_PATH}" -mindepth 2 -maxdepth 2 -type f -name manifest.json -printf '%T@\t%h\n' 2>/dev/null \
+        | sort -rn \
+        | cut -f2-
+}
+
+resolve_snapshot() {
+    local ref="$1"
+    if [[ "${ref}" == "latest" ]]; then
+        snapshot_dirs_newest_first | head -1
+    elif [[ -d "${DR_SNAPSHOTS_PATH}/${ref}" ]]; then
+        echo "${DR_SNAPSHOTS_PATH}/${ref}"
+    elif [[ -d "${ref}" ]]; then
+        echo "${ref}"
+    fi
+}
+
+file_bytes() {
+    if [[ -f "$1" ]]; then stat -c %s "$1"; else echo 0; fi
+}
+
+# tar exits 1 for "file changed as we read it" (a live world save); that is an
+# acceptable snapshot, anything >1 is not.
+tar_ok() {
+    local rc=$1
+    [[ ${rc} -le 1 ]]
+}
+
+# -----------------------------------------------------------------------------
+# Commands
+# -----------------------------------------------------------------------------
+cmd_snapshot() {
+    local label="manual" reason=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --reason) reason="${2:-}"; shift 2 ;;
+            --*) log_error "Unknown option: $1"; return 1 ;;
+            *) label="$1"; shift ;;
+        esac
+    done
+    label=$(printf '%s' "${label}" | tr -c 'A-Za-z0-9._-' '_')
+    [[ -n "${label}" ]] || label="manual"
+
+    local build_id
+    build_id=$(get_installed_build_id)
+    if [[ "${build_id}" == "0" ]] || [[ ! -f "${VALHEIM_SERVER_BINARY}" ]]; then
+        log_warn "No installed server build to snapshot (build_id=${build_id})"
+        return 2
+    fi
+
+    local id dir
+    id="$(date +%Y%m%d_%H%M%S)_${label}"
+    dir="${DR_SNAPSHOTS_PATH}/${id}"
+    mkdir -p "${dir}"
+
+    log_info "=========================================="
+    log_info "DR snapshot: ${id} (build ${build_id})"
+    log_info "=========================================="
+
+    log_info "Archiving server files: ${VALHEIM_SERVER_PATH}"
+    tar --warning=no-file-changed \
+        --exclude='./steamapps/downloading' \
+        --exclude='./steamapps/temp' \
+        --exclude='./BepInEx/LogOutput.log' \
+        --exclude='./BepInEx/cache' \
+        -C "${VALHEIM_SERVER_PATH}" -cf "${dir}/server.tar" .
+    if ! tar_ok $?; then
+        log_error "Server archive failed"
+        rm -rf "${dir}"
+        return 1
+    fi
+
+    # World + operator state (not backups, not other snapshots)
+    local -a members=()
+    local m
+    for m in worlds_local bepinex adminlist.txt bannedlist.txt permittedlist.txt; do
+        [[ -e "${CONFIG_PATH}/${m}" ]] && members+=("${m}")
+    done
+    if [[ ${#members[@]} -gt 0 ]]; then
+        log_info "Archiving world/config: ${members[*]}"
+        tar --warning=no-file-changed -C "${CONFIG_PATH}" -cf "${dir}/config.tar" "${members[@]}"
+        if ! tar_ok $?; then
+            log_error "Config archive failed"
+            rm -rf "${dir}"
+            return 1
+        fi
+    else
+        log_warn "No world/config files present yet; server-only snapshot"
+    fi
+
+    # jq 1.6 (Debian bookworm) rejects keywords such as `label` as variable
+    # names and bare object keys; hence $snap_label and the quoted keys.
+    jq -n \
+        --arg id "${id}" --arg snap_label "${label}" --arg reason "${reason}" \
+        --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg build_id "${build_id}" \
+        --arg bepinex_version "$(get_bepinex_installed_version)" \
+        --arg variant "${VALHEIM_VARIANT}" \
+        --arg world "$(get_world_name)" \
+        --argjson server_tar_bytes "$(file_bytes "${dir}/server.tar")" \
+        --argjson config_tar_bytes "$(file_bytes "${dir}/config.tar")" \
+        '{"id":$id,"label":$snap_label,"reason":$reason,"created_at":$created_at,"build_id":$build_id,
+          "bepinex_version":$bepinex_version,"variant":$variant,"world":$world,
+          "server_tar_bytes":$server_tar_bytes,"config_tar_bytes":$config_tar_bytes}' \
+        > "${dir}/manifest.json.tmp" || {
+            log_error "Failed to write snapshot manifest"
+            rm -rf "${dir}"
+            return 1
+        }
+    mv "${dir}/manifest.json.tmp" "${dir}/manifest.json"
+
+    chown -R "${PUID:-1000}:${PGID:-1000}" "${dir}" 2>/dev/null || true
+
+    log_success "Snapshot ready: ${dir} ($(du -sh "${dir}" | cut -f1))"
+    cmd_prune > /dev/null
+    echo "${id}"
+    return 0
+}
+
+cmd_list() {
+    local dir
+    while read -r dir; do
+        [[ -n "${dir}" ]] || continue
+        jq -r '"\(.id)\t\(.label)\tbuild=\(.build_id)\tbepinex=\(.bepinex_version // "-")\t\(.created_at)"' "${dir}/manifest.json"
+    done < <(snapshot_dirs_newest_first)
+}
+
+cmd_has_snapshot() {
+    [[ -n "$(snapshot_dirs_newest_first | head -1)" ]]
+}
+
+cmd_prune() {
+    local keep="${1:-${DR_KEEP_SNAPSHOTS:-2}}"
+    [[ "${keep}" =~ ^[0-9]+$ ]] || { log_error "prune: N must be an integer"; return 1; }
+    [[ ${keep} -gt 0 ]] || { log_info "prune: DR_KEEP_SNAPSHOTS=0, keeping all"; return 0; }
+
+    local -a dirs=()
+    mapfile -t dirs < <(snapshot_dirs_newest_first)
+    local i
+    for ((i = keep; i < ${#dirs[@]}; i++)); do
+        log_info "Pruning old snapshot: $(basename "${dirs[$i]}")"
+        rm -rf "${dirs[$i]}"
+    done
+    return 0
+}
+
+cmd_hold() {
+    local reason="${*:-operator}"
+    mkdir -p "${DR_PATH}"
+    printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${reason}" > "${DR_HOLD_FLAG}"
+    log_warn "UPDATE_HOLD set: ${reason}"
+    log_warn "Steam updates are blocked until 'valheim-dr release'"
+}
+
+cmd_release() {
+    if is_update_hold; then
+        rm -f "${DR_HOLD_FLAG}"
+        log_success "UPDATE_HOLD released; updates resume on next updater run"
+    else
+        log_info "No update hold was set"
+    fi
+}
+
+cmd_restart() {
+    if is_supervisor_running; then
+        log_info "Restarting valheim-server via supervisor"
+        supervisor_ctl restart valheim-server
+    else
+        log_error "Supervisor is not running; cannot restart server"
+        return 1
+    fi
+}
+
+# Sets RESUME_MODE to "supervisor" | "script" | "none" so the caller can resume
+# the same way. Deliberately NOT echoed for capture: the log lines below also go
+# to stdout and would pollute a $(...) result.
+RESUME_MODE="none"
+stop_server_for_maintenance() {
+    if is_supervisor_running && supervisor_ctl status valheim-server 2>/dev/null | grep -qE 'RUNNING|STARTING'; then
+        log_info "Stopping valheim-server via supervisor"
+        supervisor_ctl stop valheim-server > /dev/null
+        RESUME_MODE="supervisor"
+    elif is_server_running; then
+        log_info "Stopping valheim-server process"
+        /opt/valheim/scripts/valheim-server stop > /dev/null
+        RESUME_MODE="script"
+    else
+        RESUME_MODE="none"
+    fi
+}
+
+resume_server() {
+    case "$1" in
+        supervisor) supervisor_ctl start valheim-server > /dev/null ;;
+        script) /opt/valheim/scripts/valheim-server start > /dev/null 2>&1 & ;;
+        *) ;;
+    esac
+}
+
+cmd_restore() {
+    local ref="" scope="all" reason=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --server-only) scope="server"; shift ;;
+            --world-only) scope="world"; shift ;;
+            --reason) reason="${2:-}"; shift 2 ;;
+            --*) log_error "Unknown option: $1"; return 1 ;;
+            *) ref="$1"; shift ;;
+        esac
+    done
+    [[ -n "${ref}" ]] || { log_error "restore: snapshot id or 'latest' required"; return 1; }
+
+    local dir
+    dir=$(resolve_snapshot "${ref}")
+    if [[ -z "${dir}" ]] || [[ ! -f "${dir}/manifest.json" ]]; then
+        log_error "Snapshot not found: ${ref}"
+        cmd_list
+        return 1
+    fi
+
+    local id build_id
+    id=$(jq -r .id "${dir}/manifest.json")
+    build_id=$(jq -r .build_id "${dir}/manifest.json")
+
+    log_info "=========================================="
+    log_info "DR restore: ${id} (build ${build_id}, scope ${scope})"
+    log_info "=========================================="
+
+    # Verify archives before touching anything
+    if [[ "${scope}" != "world" ]]; then
+        [[ -f "${dir}/server.tar" ]] || { log_error "server.tar missing"; return 1; }
+        tar -tf "${dir}/server.tar" > /dev/null || { log_error "server.tar is corrupt"; return 1; }
+    fi
+    if [[ "${scope}" != "server" ]] && [[ -f "${dir}/config.tar" ]]; then
+        tar -tf "${dir}/config.tar" > /dev/null || { log_error "config.tar is corrupt"; return 1; }
+    fi
+
+    stop_server_for_maintenance
+    local resume_mode="${RESUME_MODE}"
+    log_info "Server stopped via: ${resume_mode}"
+
+    # Belt and braces: never extract over a live server
+    local waited=0
+    while is_server_running && [[ ${waited} -lt 130 ]]; do
+        sleep 1; waited=$((waited + 1))
+    done
+    if is_server_running; then
+        log_error "Server still running after ${waited}s; aborting restore"
+        resume_server "${resume_mode}"
+        return 1
+    fi
+
+    if [[ "${scope}" != "world" ]]; then
+        log_info "Replacing server files in ${VALHEIM_SERVER_PATH}"
+        find "${VALHEIM_SERVER_PATH}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        if ! tar -xf "${dir}/server.tar" -C "${VALHEIM_SERVER_PATH}"; then
+            log_error "Server restore FAILED - server directory is now incomplete; re-run restore or force an update"
+            return 1
+        fi
+    fi
+
+    if [[ "${scope}" != "server" ]] && [[ -f "${dir}/config.tar" ]]; then
+        log_info "Restoring world/config into ${CONFIG_PATH}"
+        if ! tar -xf "${dir}/config.tar" -C "${CONFIG_PATH}" --overwrite; then
+            log_error "World/config restore FAILED"
+            return 1
+        fi
+    fi
+
+    chown -R "${PUID:-1000}:${PGID:-1000}" "${VALHEIM_SERVER_PATH}" "${CONFIG_PATH}/worlds_local" 2>/dev/null || true
+    [[ -d "${BEPINEX_CONFIG_PATH}" ]] && chown -R "${PUID:-1000}:${PGID:-1000}" "${BEPINEX_CONFIG_PATH}" 2>/dev/null || true
+
+    cmd_hold "restored ${id}${reason:+: ${reason}}"
+
+    jq -n --arg id "${id}" --arg scope "${scope}" --arg reason "${reason}" \
+        --arg restored_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg build_id "${build_id}" \
+        '{id:$id,scope:$scope,reason:$reason,restored_at:$restored_at,build_id:$build_id}' \
+        > "${DR_LAST_RESTORE}"
+
+    rm -f "${MODCHECK_STATUS_FILE}"
+    log_info "Resuming server via: ${resume_mode}"
+    resume_server "${resume_mode}"
+
+    log_success "Restore complete (build $(get_installed_build_id)); UPDATE_HOLD is set"
+    return 0
+}
+
+cmd_safe_mode() {
+    local mode="${1:-}" reason="" snapshot=true
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --reason) reason="${2:-}"; shift 2 ;;
+            --no-snapshot) snapshot=false; shift ;;
+            *) log_error "Unknown option: $1"; return 1 ;;
+        esac
+    done
+
+    if ! is_bepinex_variant; then
+        log_error "safe-mode only applies to the bepinex variant"
+        return 1
+    fi
+
+    case "${mode}" in
+        on)
+            if is_safe_mode; then
+                log_info "SAFE_MODE already engaged"
+                return 0
+            fi
+            log_warn "Engaging SAFE_MODE: the server will run WITHOUT BepInEx."
+            log_warn "Mod-added objects in the world are dropped on the next save. A snapshot is taken first."
+            if [[ "${snapshot}" == "true" ]]; then
+                cmd_snapshot safemode --reason "${reason:-safe-mode on}" > /dev/null || log_warn "Snapshot skipped/failed; continuing"
+            fi
+            mkdir -p "${DR_PATH}"
+            printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${reason:-operator}" > "${DR_SAFE_MODE_FLAG}"
+            cmd_hold "safe-mode${reason:+: ${reason}}" > /dev/null
+            ;;
+        off)
+            if ! is_safe_mode; then
+                log_info "SAFE_MODE is not engaged"
+                return 0
+            fi
+            rm -f "${DR_SAFE_MODE_FLAG}"
+            log_success "SAFE_MODE disengaged; BepInEx will inject on the next start"
+            ;;
+        *)
+            echo "Usage: $0 safe-mode on|off [--reason TEXT] [--no-snapshot]"
+            return 1
+            ;;
+    esac
+
+    rm -f "${MODCHECK_STATUS_FILE}"
+    cmd_restart
+}
+
+cmd_modcheck() {
+    /opt/valheim/scripts/valheim-modcheck --no-policy "$@"
+}
+
+cmd_status() {
+    local snapshots="[]"
+    local -a manifests=()
+    local dir
+    while read -r dir; do
+        [[ -n "${dir}" ]] && manifests+=("${dir}/manifest.json")
+    done < <(snapshot_dirs_newest_first)
+    if [[ ${#manifests[@]} -gt 0 ]]; then
+        snapshots=$(jq -s '.' "${manifests[@]}")
+    fi
+
+    local modcheck="null"
+    [[ -f "${MODCHECK_STATUS_FILE}" ]] && modcheck=$(cat "${MODCHECK_STATUS_FILE}")
+
+    local last_restore="null"
+    [[ -f "${DR_LAST_RESTORE}" ]] && last_restore=$(cat "${DR_LAST_RESTORE}")
+
+    local hold_reason="" safe_reason=""
+    is_update_hold && hold_reason=$(cut -f2- "${DR_HOLD_FLAG}" 2>/dev/null)
+    is_safe_mode && safe_reason=$(cut -f2- "${DR_SAFE_MODE_FLAG}" 2>/dev/null)
+
+    jq -n \
+        --arg variant "${VALHEIM_VARIANT}" \
+        --arg build_id "$(get_installed_build_id)" \
+        --arg previous_build_id "$(get_previous_build_id)" \
+        --argjson server_running "$(is_server_running && echo true || echo false)" \
+        --argjson update_hold "$(is_update_hold && echo true || echo false)" \
+        --arg update_hold_reason "${hold_reason}" \
+        --argjson bepinex_supported "$(is_bepinex_variant && echo true || echo false)" \
+        --argjson bepinex_enabled "$(is_bepinex_enabled && echo true || echo false)" \
+        --argjson safe_mode "$(is_safe_mode && echo true || echo false)" \
+        --arg safe_mode_reason "${safe_reason}" \
+        --arg bepinex_pack_version "$(get_bepinex_pack_version)" \
+        --arg bepinex_installed_version "$(get_bepinex_installed_version)" \
+        --arg policy "${MOD_FAILURE_POLICY:-hold}" \
+        --argjson snapshot_before_update "$(is_true "${DR_SNAPSHOT_BEFORE_UPDATE:-false}" && echo true || echo false)" \
+        --argjson keep_snapshots "${DR_KEEP_SNAPSHOTS:-2}" \
+        --argjson modcheck "${modcheck}" \
+        --argjson last_restore "${last_restore}" \
+        --argjson snapshots "${snapshots}" \
+        '{
+            variant: $variant,
+            build_id: $build_id,
+            previous_build_id: $previous_build_id,
+            server_running: $server_running,
+            update_hold: $update_hold,
+            update_hold_reason: $update_hold_reason,
+            bepinex: {
+                supported: $bepinex_supported,
+                enabled: $bepinex_enabled,
+                safe_mode: $safe_mode,
+                safe_mode_reason: $safe_mode_reason,
+                pack_version: $bepinex_pack_version,
+                installed_version: $bepinex_installed_version
+            },
+            policy: {
+                mod_failure: $policy,
+                snapshot_before_update: $snapshot_before_update,
+                keep_snapshots: $keep_snapshots
+            },
+            modcheck: $modcheck,
+            last_restore: $last_restore,
+            snapshots: $snapshots
+        }'
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+cmd="${1:-status}"
+shift || true
+
+case "${cmd}" in
+    status) cmd_status "$@" ;;
+    snapshot) cmd_snapshot "$@" ;;
+    list) cmd_list "$@" ;;
+    has-snapshot) cmd_has_snapshot ;;
+    restore) cmd_restore "$@" ;;
+    prune) cmd_prune "$@" ;;
+    hold) cmd_hold "$@" ;;
+    release) cmd_release ;;
+    safe-mode) cmd_safe_mode "$@" ;;
+    restart) cmd_restart ;;
+    modcheck) cmd_modcheck "$@" ;;
+    *)
+        cat <<'EOF'
+Usage: valheim-dr <command> [args]
+
+  status                         JSON: variant, builds, BepInEx, hold, modcheck, snapshots
+  snapshot [label] [--reason T]  Snapshot server files + world + BepInEx state
+  list                           List snapshots (id, label, build, created)
+  has-snapshot                   Exit 0 if at least one snapshot exists
+  restore <id|latest> [--server-only|--world-only] [--reason T]
+  prune [N]                      Keep newest N snapshots (default DR_KEEP_SNAPSHOTS)
+  hold [reason]                  Block Steam updates (survives restarts)
+  release                        Lift the update hold
+  safe-mode on|off [--reason T]  Start without BepInEx (on snapshots first)
+  restart                        Restart the server process via supervisor
+  modcheck                       Run mod-load verification now (no policy)
+
+Runbook: docs/Disaster-Response.md
+EOF
+        exit 1
+        ;;
+esac

@@ -1,8 +1,11 @@
 # =============================================================================
-# Absolute Valheim Server - E2E Test Workflow
+# Absolute Valheim Server - E2E Test Workflow (vanilla artifact)
 # =============================================================================
-# Runs end-to-end tests on every push and pull request.
-# Caches server files to speed up subsequent runs.
+# The uptime-first gate. Runs the shared end-to-end suite against the `vanilla`
+# build target on every push and pull request and feeds publish.yml.
+#
+# The modded artifact has its own pipeline (bepinex.yml) so a mod-side breakage
+# after a Valheim update can never block a vanilla release.
 # =============================================================================
 
 name: E2E Tests
@@ -20,12 +23,41 @@ on:
         default: false
         type: boolean
 
+# Least privilege for GITHUB_TOKEN; no job here writes to the repo.
+permissions:
+  contents: read
+
 env:
   VALHEIM_APP_ID: '896660'
+  VALHEIM_VARIANT: vanilla
 
 jobs:
+  # -------------------------------------------------------------------------
+  # Static checks (fast, no Docker)
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Shellcheck container scripts and tests
+        run: |
+          shellcheck --version
+          shellcheck -S error -s bash -x scripts/* tests/*.sh tests/e2e/*.sh
+          # New DR/BepInEx scripts are held to the stricter bar
+          shellcheck -S warning -s bash -x -e SC2034 \
+            scripts/valheim-bepinex scripts/valheim-modcheck scripts/valheim-dr \
+            tests/e2e/test_dr_snapshot_restore.sh tests/e2e/test_bepinex_*.sh
+
   e2e-tests:
-    name: End-to-End Tests
+    name: End-to-End Tests (vanilla)
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -41,29 +73,38 @@ jobs:
 
       # ---------------------------------------------------------------------
       # Cache Server Files
+      # The suite runs with USE_BIND_MOUNTS=true so ./data/server IS the
+      # container's /opt/valheim/server. A restored cache therefore skips the
+      # ~1GB Steam download (SteamCMD still validates). Keyed per variant and
+      # ISO week so it refreshes as Valheim ships builds; saved even when the
+      # suite fails, because the download happened either way.
       # ---------------------------------------------------------------------
       - name: Create cache directories
         run: |
           mkdir -p data/server
           mkdir -p data/config
 
+      - name: Compute cache key
+        id: cache-key
+        run: echo "key=valheim-server-${{ env.VALHEIM_VARIANT }}-${{ env.VALHEIM_APP_ID }}-$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
       - name: Restore server file cache
         if: ${{ github.event.inputs.skip_cache != 'true' }}
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         id: server-cache
         with:
           path: data/server
-          key: valheim-server-${{ env.VALHEIM_APP_ID }}-${{ hashFiles('Dockerfile') }}
+          key: ${{ steps.cache-key.outputs.key }}
           restore-keys: |
-            valheim-server-${{ env.VALHEIM_APP_ID }}-
+            valheim-server-${{ env.VALHEIM_VARIANT }}-${{ env.VALHEIM_APP_ID }}-
 
       - name: Cache status
         run: |
-          if [ "${{ steps.server-cache.outputs.cache-hit }}" == "true" ]; then
-            echo "✅ Server files restored from cache"
-            ls -la data/server/ || true
+          if [ -f data/server/valheim_server.x86_64 ]; then
+            echo "✅ Server files restored from cache (build $(cat data/server/.build_id 2>/dev/null || echo '?'))"
+            du -sh data/server || true
           else
-            echo "⚠️ No cache found, server files will be downloaded"
+            echo "⚠️ No usable cache, server files will be downloaded"
           fi
 
       # ---------------------------------------------------------------------
@@ -74,11 +115,12 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          target: vanilla
           push: false
           load: true
-          tags: absolute-valheim-server:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: absolute-valheim-server:test-vanilla
+          cache-from: type=gha,scope=vanilla
+          cache-to: type=gha,mode=max,scope=vanilla
 
       # ---------------------------------------------------------------------
       # Run E2E Tests
@@ -104,6 +146,8 @@ jobs:
         env:
           TEST_TIMEOUT: 600
           STARTUP_WAIT: 300
+          # Mount ./data/{server,config} into the container so the cache above is used
+          USE_BIND_MOUNTS: "true"
 
       # ---------------------------------------------------------------------
       # Collect Artifacts (always, for debugging)
@@ -120,25 +164,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-test-logs
+          name: e2e-test-logs-vanilla
           path: test-artifacts/
           retention-days: 7
 
       # ---------------------------------------------------------------------
-      # Update Server File Cache
-      # ---------------------------------------------------------------------
-      - name: Save server files to cache
-        if: always()
-        run: |
-          # Copy server files from container volume if tests ran
-          if docker ps -a | grep -q valheim-server; then
-            echo "Extracting server files for cache..."
-            docker cp valheim-server:/opt/valheim/server/. data/server/ 2>/dev/null || true
-            ls -la data/server/ | head -20 || true
-          fi
-
-      # ---------------------------------------------------------------------
-      # Cleanup
+      # Cleanup (stop the container before touching the bind-mounted files)
       # ---------------------------------------------------------------------
       - name: Cleanup
         if: always()
@@ -148,13 +179,36 @@ jobs:
           docker rm -f valheim-server 2>/dev/null || true
           docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
 
+      # ---------------------------------------------------------------------
+      # Update Server File Cache
+      # ---------------------------------------------------------------------
+      - name: Prepare server files for cache
+        if: always() && steps.server-cache.outputs.cache-hit != 'true'
+        run: |
+          # The container wrote these as root/uid 1000; the cache tar runs as the runner user
+          sudo chown -R "$(id -u):$(id -g)" data/server
+          # Drop Steam scratch space and the overlay's per-run log
+          rm -rf data/server/steamapps/downloading data/server/steamapps/temp data/server/BepInEx/LogOutput.log
+          du -sh data/server || true
+
+      - name: Save server files to cache
+        if: always() && steps.server-cache.outputs.cache-hit != 'true' && hashFiles('data/server/valheim_server.x86_64') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: data/server
+          key: ${{ steps.cache-key.outputs.key }}
+
   # -------------------------------------------------------------------------
-  # Build Verification (no server download)
+  # Build Verification (both targets, no server download)
   # -------------------------------------------------------------------------
   build-only:
-    name: Build Verification
+    name: Build Verification (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [vanilla, bepinex]
 
     steps:
       - name: Checkout repository
@@ -168,19 +222,49 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          target: ${{ matrix.variant }}
           push: false
           load: true
-          tags: absolute-valheim-server:build-test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: absolute-valheim-server:build-test-${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
       - name: Verify image structure
         run: |
-          # Check that required scripts exist
-          docker run --rm absolute-valheim-server:build-test ls -la /opt/valheim/scripts/
-          
-          # Check that steamcmd is installed
-          docker run --rm absolute-valheim-server:build-test ls -la /opt/steamcmd/
-          
-          # Check supervisor config
-          docker run --rm absolute-valheim-server:build-test cat /etc/supervisor/conf.d/valheim.conf
+          IMG=absolute-valheim-server:build-test-${{ matrix.variant }}
+          # Required scripts exist
+          docker run --rm "$IMG" ls -la /opt/valheim/scripts/
+          for s in bootstrap valheim-server valheim-updater valheim-backup valheim-dr valheim-modcheck valheim-bepinex healthcheck; do
+            docker run --rm "$IMG" test -x "/opt/valheim/scripts/$s" || { echo "missing script: $s"; exit 1; }
+          done
+          # Scripts parse
+          docker run --rm "$IMG" sh -c 'for f in /opt/valheim/scripts/*; do bash -n "$f" || exit 1; done'
+          # steamcmd is installed
+          docker run --rm "$IMG" ls -la /opt/steamcmd/
+          # Supervisor config
+          docker run --rm "$IMG" cat /etc/supervisor/conf.d/valheim.conf
+          # Variant contract
+          VARIANT=$(docker run --rm "$IMG" printenv VALHEIM_VARIANT)
+          test "$VARIANT" = "${{ matrix.variant }}" || { echo "VALHEIM_VARIANT=$VARIANT"; exit 1; }
+          # DR CLI answers without a server install
+          docker run --rm "$IMG" /opt/valheim/scripts/valheim-dr status | jq -e '.variant == "${{ matrix.variant }}"'
+
+      - name: Verify BepInEx overlay is pinned into the image
+        if: matrix.variant == 'bepinex'
+        run: |
+          IMG=absolute-valheim-server:build-test-bepinex
+          docker run --rm "$IMG" test -f /opt/valheim/bepinex/BepInEx/core/BepInEx.Preloader.dll
+          docker run --rm "$IMG" test -f /opt/valheim/bepinex/doorstop_libs/libdoorstop_x64.so
+          docker run --rm "$IMG" test -f /opt/valheim/bepinex/start_server_bepinex.sh
+          PACK=$(docker run --rm "$IMG" cat /opt/valheim/bepinex/.pack_version)
+          ENVV=$(docker run --rm "$IMG" printenv BEPINEX_VERSION)
+          echo "pack=$PACK env=$ENVV"
+          test "$PACK" = "$ENVV"
+          docker run --rm "$IMG" sh -c 'test "$(printenv BEPINEX_ENABLED)" = true && test "$(printenv MODCHECK_STRICT)" = true && test "$(printenv DR_SNAPSHOT_BEFORE_UPDATE)" = true'
+
+      - name: Verify vanilla image carries no BepInEx
+        if: matrix.variant == 'vanilla'
+        run: |
+          IMG=absolute-valheim-server:build-test-vanilla
+          if docker run --rm "$IMG" test -d /opt/valheim/bepinex; then echo "vanilla image contains BepInEx"; exit 1; fi
+          docker run --rm "$IMG" sh -c 'test "$(printenv BEPINEX_ENABLED)" = false && test "$(printenv DR_SNAPSHOT_BEFORE_UPDATE)" = false'
