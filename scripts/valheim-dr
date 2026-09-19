@@ -207,18 +207,21 @@ cmd_restart() {
     fi
 }
 
+# Sets RESUME_MODE to "supervisor" | "script" | "none" so the caller can resume
+# the same way. Deliberately NOT echoed for capture: the log lines below also go
+# to stdout and would pollute a $(...) result.
+RESUME_MODE="none"
 stop_server_for_maintenance() {
-    # Echoes "supervisor" | "script" | "none" so the caller can resume the same way
     if is_supervisor_running && supervisor_ctl status valheim-server 2>/dev/null | grep -qE 'RUNNING|STARTING'; then
         log_info "Stopping valheim-server via supervisor"
         supervisor_ctl stop valheim-server > /dev/null
-        echo "supervisor"
+        RESUME_MODE="supervisor"
     elif is_server_running; then
         log_info "Stopping valheim-server process"
         /opt/valheim/scripts/valheim-server stop > /dev/null
-        echo "script"
+        RESUME_MODE="script"
     else
-        echo "none"
+        RESUME_MODE="none"
     fi
 }
 
@@ -268,8 +271,9 @@ cmd_restore() {
         tar -tf "${dir}/config.tar" > /dev/null || { log_error "config.tar is corrupt"; return 1; }
     fi
 
-    local resume_mode
-    resume_mode=$(stop_server_for_maintenance)
+    stop_server_for_maintenance
+    local resume_mode="${RESUME_MODE}"
+    log_info "Server stopped via: ${resume_mode}"
 
     # Belt and braces: never extract over a live server
     local waited=0
@@ -311,6 +315,7 @@ cmd_restore() {
         > "${DR_LAST_RESTORE}"
 
     rm -f "${MODCHECK_STATUS_FILE}"
+    log_info "Resuming server via: ${resume_mode}"
     resume_server "${resume_mode}"
 
     log_success "Restore complete (build $(get_installed_build_id)); UPDATE_HOLD is set"
