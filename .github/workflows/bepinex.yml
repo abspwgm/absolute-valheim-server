@@ -1,0 +1,330 @@
+# =============================================================================
+# Absolute Valheim Server - BepInEx artifact pipeline + mod canary
+# =============================================================================
+# Independent of the vanilla gate on purpose: the modded server is expected to
+# break when Iron Gate ships an update that BepInEx or the pinned pack cannot
+# survive yet. This workflow
+#
+#   1. builds the `bepinex` target and runs the shared e2e suite plus the
+#      mod-load / disaster drills on every push and PR,
+#   2. re-runs nightly as a canary against whatever Steam is serving, so a
+#      Valheim update that breaks injection is noticed before players do,
+#   3. publishes `:bepinex` tags only when its own suite is green,
+#   4. opens/updates a `mod-canary` issue with the Steam build id and the
+#      BepInEx version on any failure (docs/Disaster-Response.md).
+# =============================================================================
+
+name: BepInEx Artifact
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [main]
+  schedule:
+    # Nightly canary (UTC). Valheim patches tend to land on weekday mornings CET.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish :bepinex tags if the suite passes'
+        required: false
+        default: false
+        type: boolean
+      bepinex_version:
+        description: 'Override BEPINEX_VERSION (also needs bepinex_sha256)'
+        required: false
+        default: ''
+        type: string
+      bepinex_sha256:
+        description: 'sha256 of the Thunderstore zip for bepinex_version'
+        required: false
+        default: ''
+        type: string
+
+env:
+  VALHEIM_APP_ID: '896660'
+  VALHEIM_VARIANT: bepinex
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+  group: bepinex-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # -------------------------------------------------------------------------
+  # E2E + disaster drills on the modded artifact
+  # -------------------------------------------------------------------------
+  e2e:
+    name: End-to-End Tests (bepinex)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    outputs:
+      steam_build: ${{ steps.facts.outputs.steam_build }}
+      bepinex_version: ${{ steps.facts.outputs.bepinex_version }}
+      modcheck: ${{ steps.facts.outputs.modcheck }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve BepInEx pin
+        id: pin
+        run: |
+          if [ -n "${{ github.event.inputs.bepinex_version }}" ]; then
+            {
+              echo "args<<EOF"
+              echo "BEPINEX_VERSION=${{ github.event.inputs.bepinex_version }}"
+              echo "BEPINEX_SHA256=${{ github.event.inputs.bepinex_sha256 }}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "Using override BepInEx ${{ github.event.inputs.bepinex_version }}"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "Using pinned BepInEx from Dockerfile: $(grep -m1 '^ARG BEPINEX_VERSION=' Dockerfile)"
+          fi
+
+      - name: Build bepinex image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: bepinex
+          push: false
+          load: true
+          tags: absolute-valheim-server:test-bepinex
+          build-args: ${{ steps.pin.outputs.args }}
+          cache-from: type=gha,scope=bepinex
+          cache-to: type=gha,mode=max,scope=bepinex
+
+      - name: Make test scripts executable
+        run: chmod +x tests/run_e2e.sh tests/test_helpers.sh tests/e2e/*.sh
+
+      - name: Cleanup any existing containers
+        run: |
+          docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
+          docker rm -f valheim-server 2>/dev/null || true
+          docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
+
+      - name: Run E2E suite + disaster drills
+        id: e2e-tests
+        run: ./tests/run_e2e.sh
+        env:
+          VALHEIM_VARIANT: bepinex
+          TEST_TIMEOUT: 900
+          STARTUP_WAIT: 300
+          MODCHECK_TIMEOUT: 180
+
+      - name: Record canary facts
+        id: facts
+        if: always()
+        run: |
+          STEAM_BUILD=$(docker exec valheim-server cat /opt/valheim/server/.build_id 2>/dev/null || echo unknown)
+          BEPINEX=$(docker exec valheim-server cat /opt/valheim/server/.bepinex_version 2>/dev/null || echo unknown)
+          MODCHECK=$(docker exec valheim-server /opt/valheim/scripts/valheim-dr status 2>/dev/null | jq -c '.modcheck // {}' || echo '{}')
+          echo "steam_build=$STEAM_BUILD" >> "$GITHUB_OUTPUT"
+          echo "bepinex_version=$BEPINEX" >> "$GITHUB_OUTPUT"
+          echo "modcheck=$MODCHECK" >> "$GITHUB_OUTPUT"
+          {
+            echo "## 🧪 BepInEx canary"
+            echo ""
+            echo "| Fact | Value |"
+            echo "|------|-------|"
+            echo "| Valheim Steam build | \`$STEAM_BUILD\` |"
+            echo "| BepInExPack_Valheim | \`$BEPINEX\` |"
+            echo "| Suite result | ${{ steps.e2e-tests.outcome }} |"
+            echo ""
+            echo '```json'
+            echo "$MODCHECK" | jq . 2>/dev/null || echo "$MODCHECK"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect test logs
+        if: always()
+        run: |
+          mkdir -p test-artifacts
+          docker logs valheim-server > test-artifacts/container.log 2>&1 || true
+          docker inspect valheim-server > test-artifacts/container-inspect.json 2>&1 || true
+          cp -r data/logs/* test-artifacts/ 2>/dev/null || true
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-logs-bepinex
+          path: test-artifacts/
+          retention-days: 14
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
+          docker rm -f valheim-server 2>/dev/null || true
+          docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
+
+  # -------------------------------------------------------------------------
+  # Publish :bepinex tags (only from this workflow's own green run)
+  # -------------------------------------------------------------------------
+  publish:
+    name: Publish bepinex image
+    runs-on: ubuntu-latest
+    needs: e2e
+    if: >
+      needs.e2e.result == 'success' && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'schedule') ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+      )
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ghcr.io/${{ env.IMAGE_NAME }}
+          # Docker convention for variants: `-bepinex` suffix, plus a bare
+          # `bepinex` moving tag that mirrors `latest`.
+          flavor: |
+            latest=false
+            suffix=-bepinex,onlatest=true
+          tags: |
+            type=raw,value=latest
+            type=raw,value=bepinex,suffix=
+            type=sha,prefix=sha-
+            type=raw,value=bepinex-${{ needs.e2e.outputs.bepinex_version }},suffix=
+            type=raw,value=steam-${{ needs.e2e.outputs.steam_build }},suffix=-bepinex,enable=${{ needs.e2e.outputs.steam_build != 'unknown' }}
+          labels: |
+            org.opencontainers.image.variant=bepinex
+            io.absolutepower.valheim.bepinex.version=${{ needs.e2e.outputs.bepinex_version }}
+            io.absolutepower.valheim.steam.build=${{ needs.e2e.outputs.steam_build }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: bepinex
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=bepinex
+          cache-to: type=gha,mode=max,scope=bepinex
+          build-args: |
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Summary
+        run: |
+          {
+            echo "## 🐳 Published bepinex image"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # Canary triage: open/update a mod-canary issue on failure, close on recovery
+  # -------------------------------------------------------------------------
+  triage:
+    name: Mod canary triage
+    runs-on: ubuntu-latest
+    needs: e2e
+    if: always() && github.event_name != 'pull_request'
+    permissions:
+      issues: write
+
+    steps:
+      - name: Open, update, or close the canary issue
+        uses: actions/github-script@v7
+        env:
+          RESULT: ${{ needs.e2e.result }}
+          STEAM_BUILD: ${{ needs.e2e.outputs.steam_build }}
+          BEPINEX_VERSION: ${{ needs.e2e.outputs.bepinex_version }}
+          MODCHECK: ${{ needs.e2e.outputs.modcheck }}
+        with:
+          script: |
+            const label = 'mod-canary';
+            const title = 'Mod canary: BepInEx artifact failing';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { RESULT, STEAM_BUILD, BEPINEX_VERSION, MODCHECK } = process.env;
+
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: label,
+            });
+            const existing = open.data.find(i => i.title === title);
+
+            if (RESULT === 'success') {
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number,
+                  body: `✅ Recovered on Steam build \`${STEAM_BUILD}\` with BepInExPack \`${BEPINEX_VERSION}\` ([run](${runUrl})). Closing.`,
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, state: 'closed',
+                });
+              }
+              return;
+            }
+
+            let modcheckPretty = MODCHECK;
+            try { modcheckPretty = JSON.stringify(JSON.parse(MODCHECK), null, 2); } catch (e) {}
+
+            const body = [
+              `The **bepinex** artifact failed its e2e suite / disaster drills (${context.eventName}).`,
+              '',
+              '| Fact | Value |', '|---|---|',
+              `| Valheim Steam build | \`${STEAM_BUILD}\` |`,
+              `| BepInExPack_Valheim | \`${BEPINEX_VERSION}\` |`,
+              `| Run | ${runUrl} |`,
+              '',
+              '**Last modcheck verdict**', '```json', modcheckPretty, '```',
+              '',
+              '**Response runbook:** `docs/Disaster-Response.md` → "A Valheim update broke the modded server".',
+              'Production modded servers with `MOD_FAILURE_POLICY=hold` are now unhealthy but still serving;',
+              'decide between `valheim-dr safe-mode on`, `valheim-dr restore latest`, or waiting for a BepInEx pack bump.',
+              '',
+              'The vanilla artifact and its publish pipeline are unaffected.',
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number,
+                body: `🔴 Still failing.\n\n${body}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo, title, body, labels: [label],
+              });
+            }

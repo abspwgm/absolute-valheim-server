@@ -50,6 +50,33 @@ VALHEIM_CLIENT_APP_ID="892970"
 VALHEIM_SERVER_BINARY="${VALHEIM_SERVER_PATH}/valheim_server.x86_64"
 
 # -----------------------------------------------------------------------------
+# Variant / BepInEx / disaster-response (DR) paths
+# -----------------------------------------------------------------------------
+VALHEIM_VARIANT="${VALHEIM_VARIANT:-vanilla}"
+
+# Pinned BepInExPack_Valheim shipped in the bepinex image (read-only layer)
+BEPINEX_PACK_PATH="/opt/valheim/bepinex"
+# Persistent, operator-owned BepInEx state (plugins/config/patchers)
+BEPINEX_CONFIG_PATH="${CONFIG_PATH}/bepinex"
+# Files the overlay writes into the server directory
+BEPINEX_VERSION_MARKER="${VALHEIM_SERVER_PATH}/.bepinex_version"
+BEPINEX_ENV_FILE="${VALHEIM_SERVER_PATH}/.bepinex.env"
+BEPINEX_LOG_FILE="${VALHEIM_SERVER_PATH}/BepInEx/LogOutput.log"
+
+# DR state lives under /config so it survives image upgrades
+DR_PATH="${CONFIG_PATH}/dr"
+DR_SNAPSHOTS_PATH="${DR_PATH}/snapshots"
+DR_HOLD_FLAG="${DR_PATH}/UPDATE_HOLD"
+DR_SAFE_MODE_FLAG="${DR_PATH}/SAFE_MODE"
+DR_LAST_RESTORE="${DR_PATH}/last_restore.json"
+
+# Mod-load verification result (ephemeral; rewritten on every server start)
+MODCHECK_STATUS_FILE="${PID_PATH}/modcheck.json"
+MODCHECK_PID_FILE="${PID_PATH}/modcheck.pid"
+
+SUPERVISOR_SOCKET="unix:///var/run/valheim/supervisor.sock"
+
+# -----------------------------------------------------------------------------
 # Environment helpers
 # -----------------------------------------------------------------------------
 get_server_port() {
@@ -86,6 +113,59 @@ is_update_on_start_enabled() {
 is_backups_enabled() {
     local backups="${BACKUPS_ENABLED:-true}"
     [[ "${backups,,}" == "true" || "${backups}" == "1" ]]
+}
+
+is_true() {
+    local value="${1:-false}"
+    [[ "${value,,}" == "true" || "${value}" == "1" ]]
+}
+
+# -----------------------------------------------------------------------------
+# Variant / BepInEx helpers
+# -----------------------------------------------------------------------------
+is_bepinex_variant() {
+    [[ "${VALHEIM_VARIANT}" == "bepinex" ]] && [[ -d "${BEPINEX_PACK_PATH}/BepInEx/core" ]]
+}
+
+is_safe_mode() {
+    [[ -f "${DR_SAFE_MODE_FLAG}" ]]
+}
+
+is_update_hold() {
+    [[ -f "${DR_HOLD_FLAG}" ]]
+}
+
+# BepInEx is injected only when: image is the bepinex variant, the operator has
+# not disabled it (BEPINEX_ENABLED), and safe mode is not engaged.
+is_bepinex_enabled() {
+    is_bepinex_variant && is_true "${BEPINEX_ENABLED:-false}" && ! is_safe_mode
+}
+
+get_bepinex_pack_version() {
+    if [[ -f "${BEPINEX_PACK_PATH}/.pack_version" ]]; then
+        cat "${BEPINEX_PACK_PATH}/.pack_version"
+    else
+        echo ""
+    fi
+}
+
+get_bepinex_installed_version() {
+    if [[ -f "${BEPINEX_VERSION_MARKER}" ]]; then
+        cat "${BEPINEX_VERSION_MARKER}"
+    else
+        echo ""
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Supervisor helper (explicit socket so the merged Debian config is irrelevant)
+# -----------------------------------------------------------------------------
+supervisor_ctl() {
+    supervisorctl -s "${SUPERVISOR_SOCKET}" "$@"
+}
+
+is_supervisor_running() {
+    [[ -S "${SUPERVISOR_SOCKET#unix://}" ]] && supervisor_ctl status > /dev/null 2>&1
 }
 
 # -----------------------------------------------------------------------------
@@ -213,6 +293,32 @@ get_installed_build_id() {
     else
         echo "0"
     fi
+}
+
+get_previous_build_id() {
+    if [[ -f "${VALHEIM_SERVER_PATH}/.build_id.previous" ]]; then
+        cat "${VALHEIM_SERVER_PATH}/.build_id.previous"
+    else
+        echo ""
+    fi
+}
+
+# Ask Steam for the current public-branch build id without touching the install.
+# Prints the build id, or an empty string when it cannot be determined (callers
+# must treat empty as "unknown", never as "no update").
+get_remote_build_id() {
+    local output
+    output=$(timeout 120 "${STEAMCMD_PATH}/steamcmd.sh" \
+        +login anonymous \
+        +app_info_update 1 \
+        +app_info_print "${VALHEIM_APP_ID}" \
+        +quit 2>/dev/null) || true
+
+    echo "${output}" | awk '
+        /"branches"/ { in_branches = 1 }
+        in_branches && /"public"/ { in_public = 1 }
+        in_public && /"buildid"/ { gsub(/"/, "", $2); print $2; exit }
+    '
 }
 
 # -----------------------------------------------------------------------------
