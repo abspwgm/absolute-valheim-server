@@ -44,6 +44,11 @@ on:
         default: ''
         type: string
 
+# Least privilege for GITHUB_TOKEN. Jobs that need more (publish: packages,
+# triage: issues) widen it at job level.
+permissions:
+  contents: read
+
 env:
   VALHEIM_APP_ID: '896660'
   VALHEIM_VARIANT: bepinex
