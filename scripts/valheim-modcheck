@@ -91,13 +91,14 @@ write_status() {
 }
 
 # -----------------------------------------------------------------------------
-# Apply MOD_FAILURE_POLICY; echoes the action taken
+# Apply MOD_FAILURE_POLICY; sets ACTION_TAKEN (not echoed: log lines share stdout)
 # -----------------------------------------------------------------------------
+ACTION_TAKEN="none"
 apply_policy() {
     local policy="${MOD_FAILURE_POLICY:-hold}"
+    ACTION_TAKEN="none"
 
     if [[ "${APPLY_POLICY}" != "true" ]]; then
-        echo "none"
         return
     fi
 
@@ -105,32 +106,32 @@ apply_policy() {
         rollback)
             if is_update_hold; then
                 log_warn "MOD_FAILURE_POLICY=rollback but UPDATE_HOLD is already set; not rolling back again (loop guard)"
-                echo "hold"
+                ACTION_TAKEN="hold"
                 return
             fi
             if ! /opt/valheim/scripts/valheim-dr has-snapshot; then
                 log_warn "MOD_FAILURE_POLICY=rollback but no DR snapshot exists; holding instead"
                 /opt/valheim/scripts/valheim-dr hold "modcheck failed, no snapshot to roll back to" > /dev/null
-                echo "hold"
+                ACTION_TAKEN="hold"
                 return
             fi
             log_warn "MOD_FAILURE_POLICY=rollback: restoring latest DR snapshot"
             # Detach: restore stops/starts the server via supervisor.
             setsid /opt/valheim/scripts/valheim-dr restore latest --reason "modcheck failed" > /dev/null 2>&1 < /dev/null &
-            echo "rollback"
+            ACTION_TAKEN="rollback"
             ;;
         vanilla)
             if is_safe_mode; then
-                echo "hold"
+                ACTION_TAKEN="hold"
                 return
             fi
             log_warn "MOD_FAILURE_POLICY=vanilla: engaging SAFE_MODE (BepInEx disabled) after snapshot"
             setsid /opt/valheim/scripts/valheim-dr safe-mode on --reason "modcheck failed" > /dev/null 2>&1 < /dev/null &
-            echo "safe_mode"
+            ACTION_TAKEN="safe_mode"
             ;;
         hold|*)
             /opt/valheim/scripts/valheim-dr hold "modcheck failed" > /dev/null 2>&1 || true
-            echo "hold"
+            ACTION_TAKEN="hold"
             ;;
     esac
 }
@@ -180,9 +181,8 @@ main() {
                 fi
                 log_error "Modcheck: server process not running although supervisor expects it"
                 write_status failed server_not_running
-                local action
-                action=$(apply_policy)
-                write_status failed server_not_running 0 0 0 "${action}"
+                apply_policy
+                write_status failed server_not_running 0 0 0 "${ACTION_TAKEN}"
                 return 1
             fi
             continue
@@ -225,10 +225,9 @@ main() {
     fi
 
     write_status failed "${reason}" "${plugins_to_load}" "${loader_errors}" "${total_errors}"
-    local action
-    action=$(apply_policy)
-    write_status failed "${reason}" "${plugins_to_load}" "${loader_errors}" "${total_errors}" "${action}"
-    log_error "Modcheck: FAILED (${reason}); policy=${MOD_FAILURE_POLICY:-hold} action=${action}"
+    apply_policy
+    write_status failed "${reason}" "${plugins_to_load}" "${loader_errors}" "${total_errors}" "${ACTION_TAKEN}"
+    log_error "Modcheck: FAILED (${reason}); policy=${MOD_FAILURE_POLICY:-hold} action=${ACTION_TAKEN}"
     log_error "Modcheck: see docs/Disaster-Response.md - 'valheim-dr status' for details"
     return 1
 }
