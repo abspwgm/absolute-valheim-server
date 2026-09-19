@@ -106,6 +106,27 @@ jobs:
       - name: Make test scripts executable
         run: chmod +x tests/run_e2e.sh tests/test_helpers.sh tests/e2e/*.sh
 
+      # Same bind-mounted server-file cache as e2e.yml, keyed for this variant
+      # (the overlay lives inside the server dir, so the two must not share).
+      # The nightly canary always skips the restore: its job is to exercise a
+      # cold download of whatever Steam serves today.
+      - name: Create cache directories
+        run: mkdir -p data/server data/config
+
+      - name: Compute cache key
+        id: cache-key
+        run: echo "key=valheim-server-bepinex-${{ env.VALHEIM_APP_ID }}-$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore server file cache
+        if: github.event_name != 'schedule'
+        uses: actions/cache/restore@v4
+        id: server-cache
+        with:
+          path: data/server
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: |
+            valheim-server-bepinex-${{ env.VALHEIM_APP_ID }}-
+
       - name: Cleanup any existing containers
         run: |
           docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
@@ -120,6 +141,7 @@ jobs:
           TEST_TIMEOUT: 900
           STARTUP_WAIT: 300
           MODCHECK_TIMEOUT: 180
+          USE_BIND_MOUNTS: "true"
 
       - name: Record canary facts
         id: facts
@@ -167,6 +189,20 @@ jobs:
           docker compose -f docker-compose.test.yml down -v 2>/dev/null || true
           docker rm -f valheim-server 2>/dev/null || true
           docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
+
+      - name: Prepare server files for cache
+        if: always() && steps.server-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" data/server
+          rm -rf data/server/steamapps/downloading data/server/steamapps/temp data/server/BepInEx/LogOutput.log
+          du -sh data/server || true
+
+      - name: Save server files to cache
+        if: always() && steps.server-cache.outputs.cache-hit != 'true' && hashFiles('data/server/valheim_server.x86_64') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: data/server
+          key: ${{ steps.cache-key.outputs.key }}
 
   # -------------------------------------------------------------------------
   # Publish :bepinex tags (only from this workflow's own green run)

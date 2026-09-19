@@ -69,29 +69,38 @@ jobs:
 
       # ---------------------------------------------------------------------
       # Cache Server Files
+      # The suite runs with USE_BIND_MOUNTS=true so ./data/server IS the
+      # container's /opt/valheim/server. A restored cache therefore skips the
+      # ~1GB Steam download (SteamCMD still validates). Keyed per variant and
+      # ISO week so it refreshes as Valheim ships builds; saved even when the
+      # suite fails, because the download happened either way.
       # ---------------------------------------------------------------------
       - name: Create cache directories
         run: |
           mkdir -p data/server
           mkdir -p data/config
 
+      - name: Compute cache key
+        id: cache-key
+        run: echo "key=valheim-server-${{ env.VALHEIM_VARIANT }}-${{ env.VALHEIM_APP_ID }}-$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
       - name: Restore server file cache
         if: ${{ github.event.inputs.skip_cache != 'true' }}
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         id: server-cache
         with:
           path: data/server
-          key: valheim-server-${{ env.VALHEIM_APP_ID }}-${{ hashFiles('Dockerfile') }}
+          key: ${{ steps.cache-key.outputs.key }}
           restore-keys: |
-            valheim-server-${{ env.VALHEIM_APP_ID }}-
+            valheim-server-${{ env.VALHEIM_VARIANT }}-${{ env.VALHEIM_APP_ID }}-
 
       - name: Cache status
         run: |
-          if [ "${{ steps.server-cache.outputs.cache-hit }}" == "true" ]; then
-            echo "✅ Server files restored from cache"
-            ls -la data/server/ || true
+          if [ -f data/server/valheim_server.x86_64 ]; then
+            echo "✅ Server files restored from cache (build $(cat data/server/.build_id 2>/dev/null || echo '?'))"
+            du -sh data/server || true
           else
-            echo "⚠️ No cache found, server files will be downloaded"
+            echo "⚠️ No usable cache, server files will be downloaded"
           fi
 
       # ---------------------------------------------------------------------
@@ -133,6 +142,8 @@ jobs:
         env:
           TEST_TIMEOUT: 600
           STARTUP_WAIT: 300
+          # Mount ./data/{server,config} into the container so the cache above is used
+          USE_BIND_MOUNTS: "true"
 
       # ---------------------------------------------------------------------
       # Collect Artifacts (always, for debugging)
@@ -154,20 +165,7 @@ jobs:
           retention-days: 7
 
       # ---------------------------------------------------------------------
-      # Update Server File Cache
-      # ---------------------------------------------------------------------
-      - name: Save server files to cache
-        if: always()
-        run: |
-          # Copy server files from container volume if tests ran
-          if docker ps -a | grep -q valheim-server; then
-            echo "Extracting server files for cache..."
-            docker cp valheim-server:/opt/valheim/server/. data/server/ 2>/dev/null || true
-            ls -la data/server/ | head -20 || true
-          fi
-
-      # ---------------------------------------------------------------------
-      # Cleanup
+      # Cleanup (stop the container before touching the bind-mounted files)
       # ---------------------------------------------------------------------
       - name: Cleanup
         if: always()
@@ -176,6 +174,25 @@ jobs:
           docker compose down -v 2>/dev/null || true
           docker rm -f valheim-server 2>/dev/null || true
           docker volume rm valheim-test-config valheim-test-server 2>/dev/null || true
+
+      # ---------------------------------------------------------------------
+      # Update Server File Cache
+      # ---------------------------------------------------------------------
+      - name: Prepare server files for cache
+        if: always() && steps.server-cache.outputs.cache-hit != 'true'
+        run: |
+          # The container wrote these as root/uid 1000; the cache tar runs as the runner user
+          sudo chown -R "$(id -u):$(id -g)" data/server
+          # Drop Steam scratch space and the overlay's per-run log
+          rm -rf data/server/steamapps/downloading data/server/steamapps/temp data/server/BepInEx/LogOutput.log
+          du -sh data/server || true
+
+      - name: Save server files to cache
+        if: always() && steps.server-cache.outputs.cache-hit != 'true' && hashFiles('data/server/valheim_server.x86_64') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: data/server
+          key: ${{ steps.cache-key.outputs.key }}
 
   # -------------------------------------------------------------------------
   # Build Verification (both targets, no server download)
