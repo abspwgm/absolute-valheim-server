@@ -152,9 +152,11 @@ jobs:
         id: facts
         if: always()
         run: |
-          STEAM_BUILD=$(docker exec valheim-server cat /opt/valheim/server/.build_id 2>/dev/null || echo unknown)
-          BEPINEX=$(docker exec valheim-server cat /opt/valheim/server/.bepinex_version 2>/dev/null || echo unknown)
-          MODCHECK=$(docker exec valheim-server /opt/valheim/scripts/valheim-dr status 2>/dev/null | jq -c '.modcheck // {}' || echo '{}')
+          # run_e2e.sh tears the container down on exit, so read the facts from the
+          # bind-mounted server dir and the exported DR status instead of docker exec.
+          STEAM_BUILD=$(cat data/server/.build_id 2>/dev/null || echo unknown)
+          BEPINEX=$(cat data/server/.bepinex_version 2>/dev/null || echo unknown)
+          MODCHECK=$(jq -c '.modcheck // {}' data/logs/dr_status.json 2>/dev/null || echo '{}')
           echo "steam_build=$STEAM_BUILD" >> "$GITHUB_OUTPUT"
           echo "bepinex_version=$BEPINEX" >> "$GITHUB_OUTPUT"
           echo "modcheck=$MODCHECK" >> "$GITHUB_OUTPUT"
@@ -263,8 +265,8 @@ jobs:
             type=raw,value=latest
             type=raw,value=bepinex,suffix=
             type=sha,prefix=sha-
-            type=raw,value=bepinex-${{ needs.e2e.outputs.bepinex_version }},suffix=
-            type=raw,value=steam-${{ needs.e2e.outputs.steam_build }},suffix=-bepinex,enable=${{ needs.e2e.outputs.steam_build != 'unknown' }}
+            type=raw,value=bepinex-${{ needs.e2e.outputs.bepinex_version }},suffix=,enable=${{ needs.e2e.outputs.bepinex_version != 'unknown' && needs.e2e.outputs.bepinex_version != '' }}
+            type=raw,value=steam-${{ needs.e2e.outputs.steam_build }},suffix=-bepinex,enable=${{ needs.e2e.outputs.steam_build != 'unknown' && needs.e2e.outputs.steam_build != '' }}
           labels: |
             org.opencontainers.image.variant=bepinex
             io.absolutepower.valheim.bepinex.version=${{ needs.e2e.outputs.bepinex_version }}
