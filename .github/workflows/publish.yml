@@ -1,8 +1,11 @@
 # =============================================================================
-# Absolute Valheim Server - Docker Publish Workflow
+# Absolute Valheim Server - Docker Publish Workflow (vanilla artifact)
 # =============================================================================
-# Builds and publishes the Docker image to Docker Hub after E2E tests pass.
+# Builds and publishes the vanilla image to Docker Hub after E2E tests pass.
 # Triggers automatically on E2E success, version tags, or manual dispatch.
+#
+# Tags produced: latest, vanilla, <semver>, <major.minor>, <major>, sha-<sha>.
+# The bepinex artifact is published by bepinex.yml with a `-bepinex` suffix.
 # =============================================================================
 
 name: Publish Docker Image
@@ -28,6 +31,10 @@ on:
         required: false
         default: ''
         type: string
+
+# Least privilege for GITHUB_TOKEN; the publish job widens to packages: write.
+permissions:
+  contents: read
 
 env:
   REGISTRY: docker.io
@@ -124,6 +131,8 @@ jobs:
           tags: |
             # Set latest tag for main branch
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_run' }}
+            # Explicit variant alias for latest
+            type=raw,value=vanilla,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_run' }}
             # Version tags (v1.0.0 -> 1.0.0, 1.0, 1)
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -141,12 +150,15 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          target: vanilla
           push: true
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.variant=vanilla
+          cache-from: type=gha,scope=vanilla
+          cache-to: type=gha,mode=max,scope=vanilla
           build-args: |
             BUILD_DATE=${{ github.event.repository.updated_at }}
             VCS_REF=${{ github.sha }}
