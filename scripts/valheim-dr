@@ -124,8 +124,10 @@ cmd_snapshot() {
         log_warn "No world/config files present yet; server-only snapshot"
     fi
 
+    # jq 1.6 (Debian bookworm) rejects keywords such as `label` as variable
+    # names and bare object keys; hence $snap_label and the quoted keys.
     jq -n \
-        --arg id "${id}" --arg label "${label}" --arg reason "${reason}" \
+        --arg id "${id}" --arg snap_label "${label}" --arg reason "${reason}" \
         --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg build_id "${build_id}" \
         --arg bepinex_version "$(get_bepinex_installed_version)" \
@@ -133,11 +135,10 @@ cmd_snapshot() {
         --arg world "$(get_world_name)" \
         --argjson server_tar_bytes "$(file_bytes "${dir}/server.tar")" \
         --argjson config_tar_bytes "$(file_bytes "${dir}/config.tar")" \
-        '{"id":$id,"label":$label,"reason":$reason,"created_at":$created_at,"build_id":$build_id,
+        '{"id":$id,"label":$snap_label,"reason":$reason,"created_at":$created_at,"build_id":$build_id,
           "bepinex_version":$bepinex_version,"variant":$variant,"world":$world,
           "server_tar_bytes":$server_tar_bytes,"config_tar_bytes":$config_tar_bytes}' \
         > "${dir}/manifest.json.tmp" || {
-            # `label` is a jq keyword; keys are quoted above for that reason.
             log_error "Failed to write snapshot manifest"
             rm -rf "${dir}"
             return 1
