@@ -114,17 +114,35 @@ run_update() {
     local steamcmd_log="${LOG_PATH}/steamcmd.log"
     log_info "SteamCMD log: ${steamcmd_log}"
     
-    # Run SteamCMD - use subshell to capture exit code properly with tee
-    (
-        "${STEAMCMD_PATH}/steamcmd.sh" \
-            +@sSteamCmdForcePlatformType linux \
-            +force_install_dir "${VALHEIM_SERVER_PATH}" \
-            +login anonymous \
-            +app_update "${VALHEIM_APP_ID}" ${steamcmd_args} \
-            +quit
-    ) 2>&1 | tee "${steamcmd_log}" || true
-    
-    local exit_code=${PIPESTATUS[0]}
+    # Run SteamCMD - use subshell to capture exit code properly with tee.
+    # A cold SteamCMD client intermittently fails its first anonymous
+    # app_update with exit 8 "Failed to install app (Missing configuration)"
+    # before the app info cache is populated; a short retry fixes it. Only
+    # retry when nothing usable was produced.
+    local exit_code=1
+    local attempt=1
+    local max_attempts="${STEAMCMD_RETRIES:-3}"
+    while [[ ${attempt} -le ${max_attempts} ]]; do
+        if [[ ${attempt} -gt 1 ]]; then
+            log_warn "SteamCMD attempt ${attempt}/${max_attempts} (previous exit code ${exit_code})"
+            sleep 10
+        fi
+        (
+            "${STEAMCMD_PATH}/steamcmd.sh" \
+                +@sSteamCmdForcePlatformType linux \
+                +force_install_dir "${VALHEIM_SERVER_PATH}" \
+                +login anonymous \
+                +app_info_update 1 \
+                +app_update "${VALHEIM_APP_ID}" ${steamcmd_args} \
+                +quit
+        ) 2>&1 | tee -a "${steamcmd_log}" || true
+        exit_code=${PIPESTATUS[0]}
+
+        if [[ ${exit_code} -eq 0 ]] || [[ ${exit_code} -eq 7 ]] || [[ -f "${VALHEIM_SERVER_BINARY}" ]]; then
+            break
+        fi
+        attempt=$((attempt + 1))
+    done
     
     # Calculate duration
     local end_time

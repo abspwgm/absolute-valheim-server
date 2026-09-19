@@ -78,11 +78,14 @@ services:
       - "2457/udp"
       - "2458/udp"
 
-    # Volume mounts - use bind mounts for local debugging, named volumes for CI
-    # Set USE_BIND_MOUNTS=true to use local ./data folder
+    # Volume mounts - named volumes by default; tests/run_e2e.sh points these at
+    # ./data/config and ./data/server when USE_BIND_MOUNTS=true (local debugging,
+    # and CI so the restored server-file cache is what the container boots from).
+    # NOTE: do not "simplify" back to ${VAR:+a}${VAR:-b}: ${VAR:-b} expands to
+    # VAR's own value when set, producing paths like ./data/servertrue.
     volumes:
-      - ${USE_BIND_MOUNTS:+./data/config}${USE_BIND_MOUNTS:-valheim-test-config}:/config
-      - ${USE_BIND_MOUNTS:+./data/server}${USE_BIND_MOUNTS:-valheim-test-server}:/opt/valheim/server
+      - ${TEST_CONFIG_VOLUME:-valheim-test-config}:/config
+      - ${TEST_SERVER_VOLUME:-valheim-test-server}:/opt/valheim/server
 
     # Graceful shutdown timeout (allows world save)
     stop_grace_period: 2m
