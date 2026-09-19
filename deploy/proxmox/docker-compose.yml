@@ -1,0 +1,117 @@
+# =============================================================================
+# Absolute Valheim Server - two servers on one Docker host (Proxmox VM)
+# =============================================================================
+# Runs the vanilla artifact and the BepInEx artifact side by side on the Game
+# Server VLAN. Each server needs its own contiguous UDP port triple; UniFi
+# forwards each triple to this VM's static address.
+#
+#   valheim-vanilla   UDP 2456-2457   fireaimready/absolute-valheim-server:latest
+#   valheim-bepinex   UDP 2466-2467   fireaimready/absolute-valheim-server:bepinex
+#   (+2458 / +2468 only when CROSSPLAY=true)
+#
+# Setup:
+#   1. cp .env.example .env  (or export the variables) and set the passwords
+#   2. docker compose up -d
+#   3. docker compose logs -f valheim-bepinex
+#   4. docker exec valheim-bepinex /opt/valheim/scripts/valheim-dr status
+#
+# Networking/firewall runbook: docs/Proxmox-UniFi-Deployment.md
+# Modded disaster runbook:     docs/Disaster-Response.md
+# =============================================================================
+
+x-common: &common
+  restart: unless-stopped
+  stop_grace_period: 2m
+  cap_add:
+    - SYS_NICE
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  deploy:
+    resources:
+      limits:
+        memory: 4G
+      reservations:
+        memory: 2G
+
+services:
+  # ---------------------------------------------------------------------------
+  # Vanilla: uptime first. Tracks Steam automatically.
+  # ---------------------------------------------------------------------------
+  valheim-vanilla:
+    <<: *common
+    image: fireaimready/absolute-valheim-server:${VANILLA_TAG:-latest}
+    container_name: valheim-vanilla
+    environment:
+      - SERVER_NAME=${VANILLA_SERVER_NAME:-Absolute Valheim}
+      - SERVER_PORT=2456
+      - WORLD_NAME=${VANILLA_WORLD_NAME:-Midgard}
+      - SERVER_PASS=${VANILLA_SERVER_PASS:?set VANILLA_SERVER_PASS (min 5 chars)}
+      - SERVER_PUBLIC=${VANILLA_SERVER_PUBLIC:-false}
+      - CROSSPLAY=false
+      - UPDATE_ON_START=true
+      - UPDATE_CRON=${VANILLA_UPDATE_CRON:-30 5 * * *}
+      - UPDATE_IF_IDLE=true
+      - BACKUPS_ENABLED=true
+      - BACKUPS_CRON=0 * * * *
+      - BACKUPS_MAX_AGE=7
+      - ADMINLIST_IDS=${ADMINLIST_IDS:-}
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-Etc/UTC}
+    ports:
+      - "2456:2456/udp"
+      - "2457:2457/udp"
+      # 2458 only matters with CROSSPLAY=true; keep it closed otherwise
+    volumes:
+      - vanilla-config:/config
+      - vanilla-server:/opt/valheim/server
+
+  # ---------------------------------------------------------------------------
+  # BepInEx: modded. DR harness armed by the image; updates are deliberate.
+  # Drop plugins into the `bepinex-config` volume under bepinex/plugins.
+  # ---------------------------------------------------------------------------
+  valheim-bepinex:
+    <<: *common
+    image: fireaimready/absolute-valheim-server:${BEPINEX_TAG:-bepinex}
+    container_name: valheim-bepinex
+    environment:
+      - SERVER_NAME=${BEPINEX_SERVER_NAME:-Absolute Valheim (Modded)}
+      - SERVER_PORT=2466
+      - WORLD_NAME=${BEPINEX_WORLD_NAME:-Asgard}
+      - SERVER_PASS=${BEPINEX_SERVER_PASS:?set BEPINEX_SERVER_PASS (min 5 chars)}
+      - SERVER_PUBLIC=false
+      - CROSSPLAY=false
+      # Track Steam like the players' clients do, but snapshot first and verify
+      # mods after. Set UPDATE_ON_START=false to make updates fully manual.
+      - UPDATE_ON_START=${BEPINEX_UPDATE_ON_START:-true}
+      - UPDATE_CRON=
+      - UPDATE_IF_IDLE=true
+      - BACKUPS_ENABLED=true
+      - BACKUPS_CRON=0 * * * *
+      - BACKUPS_MAX_AGE=7
+      - ADMINLIST_IDS=${ADMINLIST_IDS:-}
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-Etc/UTC}
+      # Disaster response
+      - DR_SNAPSHOT_BEFORE_UPDATE=true
+      - DR_KEEP_SNAPSHOTS=3
+      - MODCHECK_STRICT=true
+      - MODCHECK_TIMEOUT=300
+      - MODCHECK_EXPECT_PLUGINS=${BEPINEX_EXPECT_PLUGINS:-}
+      - MOD_FAILURE_POLICY=${BEPINEX_FAILURE_POLICY:-hold}
+    ports:
+      - "2466:2466/udp"
+      - "2467:2467/udp"
+    volumes:
+      - bepinex-config:/config
+      - bepinex-server:/opt/valheim/server
+
+volumes:
+  vanilla-config:
+  vanilla-server:
+  bepinex-config:
+  bepinex-server:

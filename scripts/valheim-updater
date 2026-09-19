@@ -14,13 +14,55 @@ fi
 
 # Parse arguments
 FORCE_UPDATE=false
+IGNORE_HOLD=false
 for arg in "$@"; do
     case ${arg} in
         --force)
             FORCE_UPDATE=true
             ;;
+        --ignore-hold)
+            # Operator escape hatch: update despite a DR UPDATE_HOLD
+            IGNORE_HOLD=true
+            ;;
     esac
 done
+
+# -----------------------------------------------------------------------------
+# Disaster-response: snapshot before a real update lands
+# -----------------------------------------------------------------------------
+# Only when DR_SNAPSHOT_BEFORE_UPDATE=true (bepinex default). Asks Steam for the
+# public build id first so an unchanged build does not cost a 1GB archive on
+# every restart; an unknown answer is treated as "an update might land".
+pre_update_snapshot() {
+    if ! is_true "${DR_SNAPSHOT_BEFORE_UPDATE:-false}"; then
+        return 0
+    fi
+
+    local installed
+    installed=$(get_installed_build_id)
+    if [[ "${installed}" == "0" ]]; then
+        log_info "DR: no installed build yet; nothing to snapshot"
+        return 0
+    fi
+
+    local remote
+    remote=$(get_remote_build_id)
+    if [[ -z "${remote}" ]]; then
+        log_warn "DR: could not determine remote build id; snapshotting to be safe"
+    elif [[ "${remote}" == "${installed}" ]]; then
+        log_info "DR: installed build ${installed} matches Steam public build; no pre-update snapshot needed"
+        return 0
+    else
+        log_warn "DR: Steam public build ${remote} differs from installed ${installed}; snapshotting before update"
+    fi
+
+    if /opt/valheim/scripts/valheim-dr snapshot preupdate --reason "before update ${installed} -> ${remote:-unknown}" > /dev/null; then
+        log_success "DR: pre-update snapshot taken ('valheim-dr list')"
+    else
+        log_warn "DR: pre-update snapshot failed; continuing with update"
+    fi
+    return 0
+}
 
 # -----------------------------------------------------------------------------
 # Check if update is needed
@@ -58,7 +100,12 @@ run_update() {
     
     # Ensure log directory exists
     mkdir -p "${LOG_PATH}" 2>/dev/null || true
-    
+
+    # DR: remember what we are about to replace, snapshot if a new build is coming
+    local previous_build
+    previous_build=$(get_installed_build_id)
+    pre_update_snapshot
+
     # Record start time
     local start_time
     start_time=$(date +%s)
@@ -96,7 +143,14 @@ run_update() {
         local new_build
         new_build=$(get_installed_build_id)
         log_success "Update completed in ${duration}s (Build: ${new_build})"
-        
+        if [[ "${previous_build}" != "0" ]] && [[ "${new_build}" != "${previous_build}" ]]; then
+            echo "${previous_build}" > "${VALHEIM_SERVER_PATH}/.build_id.previous"
+            log_warn "Valheim build changed: ${previous_build} -> ${new_build}"
+            if is_bepinex_variant; then
+                log_warn "Modded server: watch 'valheim-dr status' / modcheck after start"
+            fi
+        fi
+
         # Save build ID for caching purposes
         echo "${new_build}" > "${VALHEIM_SERVER_PATH}/.build_id"
         return 0
@@ -121,6 +175,16 @@ run_update() {
 # Main update logic
 # -----------------------------------------------------------------------------
 main() {
+    # DR hold: an operator (or a rollback) has frozen this install
+    if is_update_hold && [[ "${IGNORE_HOLD}" != "true" ]]; then
+        log_warn "=========================================="
+        log_warn "UPDATE_HOLD is active - skipping Steam update"
+        log_warn "Reason: $(cut -f2- "${DR_HOLD_FLAG}" 2>/dev/null)"
+        log_warn "Run 'valheim-dr release' to resume updates, or 'valheim-updater --force --ignore-hold' once"
+        log_warn "=========================================="
+        return 0
+    fi
+
     # Check if we should skip due to active players
     if [[ "${FORCE_UPDATE}" != "true" ]]; then
         local update_if_idle="${UPDATE_IF_IDLE:-true}"

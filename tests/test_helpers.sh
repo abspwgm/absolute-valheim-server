@@ -189,6 +189,75 @@ wait_for_port() {
     return 1
 }
 
+# Wait until a file INSIDE the container contains a pattern
+wait_for_file_pattern() {
+    local container="$1"
+    local file="$2"
+    local pattern="$3"
+    local timeout="${4:-60}"
+    local elapsed=0
+
+    while [[ ${elapsed} -lt ${timeout} ]]; do
+        if docker_exec "${container}" grep -q "${pattern}" "${file}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Disaster-response helpers (valheim-dr / modcheck)
+# -----------------------------------------------------------------------------
+dr() {
+    # Usage: dr <container> <valheim-dr args...>
+    local container="$1"
+    shift
+    docker_exec "${container}" /opt/valheim/scripts/valheim-dr "$@"
+}
+
+dr_status_field() {
+    # Usage: dr_status_field <container> <jq filter>
+    local container="$1"
+    local filter="$2"
+    dr "${container}" status 2>/dev/null | jq -r "${filter}"
+}
+
+# Wait until modcheck reports one of the given statuses (space-separated)
+wait_for_modcheck_status() {
+    local container="$1"
+    local wanted="$2"
+    local timeout="${3:-300}"
+    local elapsed=0
+    local current="null"
+
+    while [[ ${elapsed} -lt ${timeout} ]]; do
+        current=$(dr_status_field "${container}" '.modcheck.status // "null"')
+        for status in ${wanted}; do
+            if [[ "${current}" == "${status}" ]]; then
+                log_info "Modcheck status: ${current}"
+                return 0
+            fi
+        done
+        sleep 5
+        elapsed=$((elapsed + 5))
+        if [[ $((elapsed % 30)) -eq 0 ]]; then
+            log_info "Modcheck status is '${current}', waiting for '${wanted}'... (${elapsed}s/${timeout}s)"
+        fi
+    done
+
+    log_error "Modcheck status '${current}' never became '${wanted}' within ${timeout}s"
+    return 1
+}
+
+healthcheck_exit_code() {
+    local container="$1"
+    docker_exec "${container}" /opt/valheim/scripts/healthcheck > /dev/null 2>&1
+    echo $?
+}
+
 # -----------------------------------------------------------------------------
 # Container Operations
 # -----------------------------------------------------------------------------

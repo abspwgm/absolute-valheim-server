@@ -3,6 +3,10 @@
 # =============================================================================
 # This file is used for CI/CD testing. It avoids host port binding to prevent
 # conflicts when ports are already in use.
+#
+# VALHEIM_VARIANT selects the build target / artifact under test:
+#   VALHEIM_VARIANT=vanilla  (default)  ./tests/run_e2e.sh
+#   VALHEIM_VARIANT=bepinex             VALHEIM_VARIANT=bepinex ./tests/run_e2e.sh
 # =============================================================================
 
 services:
@@ -10,7 +14,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: absolute-valheim-server:test
+      target: ${VALHEIM_VARIANT:-vanilla}
+    image: absolute-valheim-server:test-${VALHEIM_VARIANT:-vanilla}
     container_name: valheim-server
 
     # =========================================================================
@@ -59,6 +64,12 @@ services:
       - LOG_FILTER_EMPTY=true
       - LOG_FILTER_UTF8=true
       - LOG_FILTER_CONTAINS=
+
+      # Disaster-response harness (bepinex drills rely on these; inert on vanilla)
+      # Short modcheck window keeps the disaster drill inside the test timeout.
+      - MODCHECK_TIMEOUT=${MODCHECK_TIMEOUT:-180}
+      - MOD_FAILURE_POLICY=hold
+      - DR_KEEP_SNAPSHOTS=3
 
     # Don't bind to host ports in CI to avoid conflicts
     # Tests will use docker exec and docker logs instead of network queries
