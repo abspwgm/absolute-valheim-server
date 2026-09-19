@@ -31,12 +31,13 @@ mkdir -p "${DR_SNAPSHOTS_PATH}"
 # -----------------------------------------------------------------------------
 # Snapshot helpers
 # -----------------------------------------------------------------------------
+# Newest first by the manifest's mtime (sub-second), not by directory name:
+# two snapshots taken within the same second would otherwise be ordered by
+# their label ("e2e" before "canary"), and `restore latest` would pick wrong.
 snapshot_dirs_newest_first() {
-    find "${DR_SNAPSHOTS_PATH}" -mindepth 1 -maxdepth 1 -type d -name '*_*' 2>/dev/null \
-        | while read -r dir; do
-            [[ -f "${dir}/manifest.json" ]] && echo "${dir}"
-          done \
-        | sort -r
+    find "${DR_SNAPSHOTS_PATH}" -mindepth 2 -maxdepth 2 -type f -name manifest.json -printf '%T@\t%h\n' 2>/dev/null \
+        | sort -rn \
+        | cut -f2-
 }
 
 resolve_snapshot() {
@@ -132,10 +133,16 @@ cmd_snapshot() {
         --arg world "$(get_world_name)" \
         --argjson server_tar_bytes "$(file_bytes "${dir}/server.tar")" \
         --argjson config_tar_bytes "$(file_bytes "${dir}/config.tar")" \
-        '{id:$id,label:$label,reason:$reason,created_at:$created_at,build_id:$build_id,
-          bepinex_version:$bepinex_version,variant:$variant,world:$world,
-          server_tar_bytes:$server_tar_bytes,config_tar_bytes:$config_tar_bytes}' \
-        > "${dir}/manifest.json"
+        '{"id":$id,"label":$label,"reason":$reason,"created_at":$created_at,"build_id":$build_id,
+          "bepinex_version":$bepinex_version,"variant":$variant,"world":$world,
+          "server_tar_bytes":$server_tar_bytes,"config_tar_bytes":$config_tar_bytes}' \
+        > "${dir}/manifest.json.tmp" || {
+            # `label` is a jq keyword; keys are quoted above for that reason.
+            log_error "Failed to write snapshot manifest"
+            rm -rf "${dir}"
+            return 1
+        }
+    mv "${dir}/manifest.json.tmp" "${dir}/manifest.json"
 
     chown -R "${PUID:-1000}:${PGID:-1000}" "${dir}" 2>/dev/null || true
 

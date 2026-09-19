@@ -146,12 +146,17 @@ setup_test_environment() {
     # Create data directories
     mkdir -p data/config data/server data/logs
     
-    # Export USE_BIND_MOUNTS for docker-compose only if it's "true"
-    # When unset, docker-compose will use the default named volumes
+    # Bind mounts vs named volumes. docker-compose.test.yml reads the two
+    # TEST_*_VOLUME variables; exported so test scripts that re-run
+    # `docker compose up` (graceful_shutdown) mount the same places.
     if [[ "${USE_BIND_MOUNTS}" == "true" ]]; then
         export USE_BIND_MOUNTS
+        export TEST_CONFIG_VOLUME="./data/config"
+        export TEST_SERVER_VOLUME="./data/server"
+        log_info "Using bind mounts: ./data/config, ./data/server"
     else
-        unset USE_BIND_MOUNTS
+        unset USE_BIND_MOUNTS TEST_CONFIG_VOLUME TEST_SERVER_VOLUME
+        log_info "Using named volumes: valheim-test-config, valheim-test-server"
     fi
     
     # Build the container
