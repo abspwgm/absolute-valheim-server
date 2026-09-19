@@ -30,7 +30,7 @@ A production-ready, containerized Valheim dedicated server with automatic update
 
 The pipelines are independent: a mod-side breakage after a Valheim update can never block a vanilla release. Build locally with `docker build --target bepinex .` or `VALHEIM_VARIANT=bepinex docker compose up -d --build`.
 
-Running both servers on one host (e.g. a Proxmox VM in a game-server VLAN)? Use [deploy/proxmox/docker-compose.yml](deploy/proxmox/docker-compose.yml) and follow [docs/Proxmox-UniFi-Deployment.md](docs/Proxmox-UniFi-Deployment.md) for port forwarding and firewall rules.
+Running both servers on one host? Start from [deploy/proxmox/docker-compose.yml](deploy/proxmox/docker-compose.yml).
 
 ## Quick Start
 

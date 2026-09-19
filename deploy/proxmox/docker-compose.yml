@@ -15,7 +15,6 @@
 #   3. docker compose logs -f valheim-bepinex
 #   4. docker exec valheim-bepinex /opt/valheim/scripts/valheim-dr status
 #
-# Networking/firewall runbook: docs/Proxmox-UniFi-Deployment.md
 # Modded disaster runbook:     docs/Disaster-Response.md
 # =============================================================================
 

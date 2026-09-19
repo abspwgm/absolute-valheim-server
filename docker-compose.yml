@@ -9,7 +9,7 @@
 #   4. Stop: docker compose down
 #
 # Running BOTH servers side by side on one host (e.g. the Proxmox VM)?
-# See deploy/proxmox/docker-compose.yml and docs/Proxmox-UniFi-Deployment.md.
+# See deploy/proxmox/docker-compose.yml.
 # =============================================================================
 
 services:
