@@ -46,21 +46,39 @@ generate_env_file() {
         return 1
     fi
 
+    # Evaluate the pack's exports as PLAIN (non-exported) shell assignments.
+    # If LD_PRELOAD=libdoorstop_x64.so were exported here, every external
+    # command this subshell ran afterwards would get doorstop preloaded and
+    # its "Failed to hook dlsym" chatter would end up inside the values. For
+    # the same reason the loop below uses only bash builtins.
+    local assignments
+    assignments=$(printf '%s\n' "${exports}" | sed -E 's/^[[:space:]]*export[[:space:]]+//')
+
     (
         cd "${VALHEIM_SERVER_PATH}" || exit 1
         unset LD_LIBRARY_PATH LD_PRELOAD
         # shellcheck disable=SC2086
-        eval "${exports}"
+        eval "${assignments}"
         # Always include the Valheim native libs alongside doorstop's.
         case ":${LD_LIBRARY_PATH:-}:" in
             *":./linux64:"*) ;;
             *) LD_LIBRARY_PATH="./linux64:${LD_LIBRARY_PATH:-}" ;;
         esac
         for var in "${!DOORSTOP_@}" LD_LIBRARY_PATH LD_PRELOAD; do
-            [[ -n "${!var:-}" ]] || continue
-            printf '%s=%s\n' "${var}" "$(printf '%s' "${!var}" | sed 's/:*$//')"
+            value="${!var:-}"
+            [[ -n "${value}" ]] || continue
+            while [[ "${value}" == *: ]]; do value="${value%:}"; done
+            printf '%s=%s\n' "${var}" "${value}"
         done
     ) > "${BEPINEX_ENV_FILE}.tmp" || return 1
+
+    # Belt and braces: values must be single-line and free of preload chatter.
+    if grep -qE 'Failed to hook|^[^=]*$' "${BEPINEX_ENV_FILE}.tmp"; then
+        log_error "Generated launch env is malformed:"
+        cat "${BEPINEX_ENV_FILE}.tmp"
+        rm -f "${BEPINEX_ENV_FILE}.tmp"
+        return 1
+    fi
 
     mv "${BEPINEX_ENV_FILE}.tmp" "${BEPINEX_ENV_FILE}"
 
