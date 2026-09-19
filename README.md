@@ -1,22 +1,36 @@
 # Absolute Valheim Server
 
 [![E2E Tests](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/e2e.yml/badge.svg)](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/e2e.yml)
+[![BepInEx Artifact](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/bepinex.yml/badge.svg)](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/bepinex.yml)
 [![Docker Image](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/publish.yml/badge.svg)](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/publish.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/fireaimready/absolute-valheim-server)](https://hub.docker.com/r/fireaimready/absolute-valheim-server)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-A production-ready, containerized Valheim dedicated server with automatic updates, backups, log filtering, and comprehensive end-to-end testing.
+A production-ready, containerized Valheim dedicated server with automatic updates, backups, log filtering, and comprehensive end-to-end testing. Ships as two artifacts: a stock **vanilla** image built for uptime, and a **BepInEx** image with a pinned mod loader and a disaster-response harness for the day a Valheim patch breaks your mods.
 
 ## Features
 
 - **Docker-based deployment** - Easy setup with Docker Compose
+- **Two artifacts, one source** - `vanilla` (uptime-first) and `bepinex` (modded, DR-armed); see [Image variants](#image-variants)
 - **Auto-updates on startup** - Server files automatically update on container start/restart
 - **Automated backups** - Scheduled world backups with retention policies
+- **Disaster response for modded servers** - Pre-update snapshots, mod-load verification, hold / rollback / safe mode, nightly canary; see [docs/Disaster-Response.md](docs/Disaster-Response.md)
 - **Log filtering** - Clean, readable logs with noise filtering
-- **E2E tested** - Comprehensive automated test suite
+- **E2E tested** - Comprehensive automated test suite, including disaster drills
 - **Non-root execution** - Configurable UID/GID for security
 - **Systemd support** - Native Linux service for non-Docker deployments
 - **Fully configurable** - All settings via environment variables
+
+## Image variants
+
+| Tag | Target | What you get | Pipeline |
+|---|---|---|---|
+| `latest`, `vanilla`, `1.2.3`, `sha-…` | `vanilla` | Stock dedicated server. Tracks Steam, auto-updates, no third-party runtime. The DR CLI is present but unarmed. | `e2e.yml` gates, `publish.yml` publishes |
+| `bepinex`, `latest-bepinex`, `bepinex-5.4.2350`, `steam-<build>-bepinex`, `sha-…-bepinex` | `bepinex` | Vanilla + [BepInExPack_Valheim](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/) pinned by version **and** sha256, plugins persisted under `/config/bepinex`, DR harness armed (snapshot before updates, mod-load health check, `MOD_FAILURE_POLICY`). | `bepinex.yml` tests, publishes and runs the nightly canary |
+
+The pipelines are independent: a mod-side breakage after a Valheim update can never block a vanilla release. Build locally with `docker build --target bepinex .` or `VALHEIM_VARIANT=bepinex docker compose up -d --build`.
+
+Running both servers on one host (e.g. a Proxmox VM in a game-server VLAN)? Use [deploy/proxmox/docker-compose.yml](deploy/proxmox/docker-compose.yml) and follow [docs/Proxmox-UniFi-Deployment.md](docs/Proxmox-UniFi-Deployment.md) for port forwarding and firewall rules.
 
 ## Quick Start
 
@@ -188,12 +202,35 @@ Find your SteamID64 at [steamid.io](https://steamid.io/).
 | `LOG_FILTER_UTF8` | `true` | Filter invalid UTF-8 |
 | `LOG_FILTER_CONTAINS` | *(empty)* | Custom filter patterns (pipe-separated) |
 
+### Disaster Response (both variants)
+
+Full runbook: [docs/Disaster-Response.md](docs/Disaster-Response.md). Operator CLI: `docker exec <container> /opt/valheim/scripts/valheim-dr status|snapshot|restore|hold|release|safe-mode`.
+
+| Variable | vanilla | bepinex | Description |
+|----------|---------|---------|-------------|
+| `DR_SNAPSHOT_BEFORE_UPDATE` | `false` | `true` | Snapshot server files + world + BepInEx state before a Steam update that changes the build (Steam is queried first; unchanged builds cost nothing) |
+| `DR_KEEP_SNAPSHOTS` | `2` | `2` | Snapshots to keep (~1 GB each, plain tar) |
+
+### BepInEx (bepinex variant only)
+
+Plugins go in `/config/bepinex/plugins`, config in `/config/bepinex/config`, patchers in `/config/bepinex/patchers`; they survive image upgrades and restores.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BEPINEX_ENABLED` | `true` | Inject BepInEx. `false` runs the modded image as vanilla without rebuilding |
+| `MODCHECK_STRICT` | `true` | Container health check fails when mods did not load |
+| `MODCHECK_TIMEOUT` | `300` | Seconds to wait for `Chainloader startup complete` after each start |
+| `MODCHECK_EXPECT_PLUGINS` | *(empty)* | Fail when fewer than N plugins load (set to your mod count) |
+| `MODCHECK_FAIL_ON_ANY_ERROR` | `false` | Also fail on plugin-level `[Error]`/`[Fatal]` lines (default: loader errors only) |
+| `MOD_FAILURE_POLICY` | `hold` | On failure: `hold` (stay up, block updates, go unhealthy), `rollback` (restore latest snapshot), `vanilla` (snapshot, then run without mods) |
+| `BEPINEX_VERSION` | *(build arg)* | Pinned pack version baked into the image; bump with its sha256 in the Dockerfile |
+
 ## Volume Mounts
 
 | Container Path | Purpose |
 |----------------|---------|
-| `/config` | Persistent data (worlds, backups, admin lists) |
-| `/opt/valheim/server` | Server files (can be cached) |
+| `/config` | Persistent data (worlds, backups, admin lists, `dr/` snapshots + flags, `bepinex/` plugins + config) |
+| `/opt/valheim/server` | Server files (can be cached); on the bepinex image also holds the BepInEx overlay |
 
 ## World Migration
 
@@ -379,45 +416,50 @@ docker compose up -d --build
 
 ### Running E2E Tests
 
-The project includes a comprehensive end-to-end test suite:
+The project includes a comprehensive end-to-end test suite. `VALHEIM_VARIANT` selects the artifact under test:
 
 ```bash
-# Run all E2E tests
+# Vanilla artifact (default): shared suite
 ./tests/run_e2e.sh
+
+# BepInEx artifact: shared suite + mod-load check + disaster drills
+VALHEIM_VARIANT=bepinex ./tests/run_e2e.sh
 
 # Run a specific test
 ./tests/run_e2e.sh server_start
-./tests/run_e2e.sh server_query
-./tests/run_e2e.sh backup
-./tests/run_e2e.sh graceful_shutdown
-./tests/run_e2e.sh restart_update
+VALHEIM_VARIANT=bepinex ./tests/run_e2e.sh bepinex_disaster_drill
 ```
 
 ### Test Requirements
 
 - Docker and Docker Compose v2
-- Bash shell (Git Bash on Windows)
-- ~2GB free disk space for server files
+- Bash shell (Git Bash on Windows) and `jq` on the host (DR tests parse `valheim-dr status`)
+- ~2GB free disk space for server files (~6GB for the bepinex suite, which takes snapshots)
 - ~4GB RAM for running the container
 
 ### Test Suite
 
-| Test | Description |
-|------|-------------|
-| `server_start` | Verifies container starts and server binary launches |
-| `server_query` | Confirms server is listening on UDP ports 2456/2457 |
-| `backup` | Tests automatic backup creation and verification |
-| `graceful_shutdown` | Validates SIGINT handling and graceful shutdown |
-| `restart_update` | Checks server restart and update functionality |
+| Test | Variant | Description |
+|------|---------|-------------|
+| `server_start` | both | Verifies container starts and server binary launches |
+| `server_query` | both | Confirms server is listening on UDP ports 2456/2457 |
+| `backup` | both | Tests automatic backup creation and verification |
+| `graceful_shutdown` | both | Validates SIGINT handling and graceful shutdown |
+| `restart_update` | both | Checks server restart and update functionality |
+| `dr_snapshot_restore` | both | Snapshot → tamper → restore → update hold set and honoured → release |
+| `bepinex_loaded` | bepinex | Doorstop env generated from the pack, plugins persisted to `/config`, chainloader completes, verdict `ok`, strict health passes |
+| `bepinex_safe_mode` | bepinex | `safe-mode on` snapshots and restarts without BepInEx (health still passes); `off` brings mods back |
+| `bepinex_disaster_drill` | bepinex | Corrupt doorstop → server up but verdict `not_loaded`, health fails, hold set → `restore latest` → healthy again |
 
 ### CI/CD Pipeline
 
-This project uses GitHub Actions for continuous integration:
+This project uses GitHub Actions with two independent pipelines:
 
-1. **E2E Tests** ([e2e.yml](.github/workflows/e2e.yml)) - Runs on every push/PR
-2. **Publish** ([publish.yml](.github/workflows/publish.yml)) - Builds and publishes Docker image after E2E passes
+1. **E2E Tests** ([e2e.yml](.github/workflows/e2e.yml)) - Lint + vanilla e2e on every push/PR, plus build verification of both targets
+2. **Publish** ([publish.yml](.github/workflows/publish.yml)) - Publishes the vanilla image (`latest`, `vanilla`, semver, `sha-…`) after E2E passes
+3. **BepInEx Artifact** ([bepinex.yml](.github/workflows/bepinex.yml)) - Bepinex e2e + disaster drills on every push/PR and **nightly** as a canary against current Steam; publishes `bepinex` / `*-bepinex` tags from its own green runs; opens or updates a `mod-canary` issue on failure and closes it on recovery
 
-The image is automatically published to:
+Images are published to:
 - **Docker Hub:** `docker.io/fireaimready/absolute-valheim-server`
 - **GitHub Container Registry:** `ghcr.io/fireaimready/absolute-valheim-server`
 
@@ -478,7 +520,7 @@ sudo systemctl restart valheim-server
 
 The following features are planned for future releases:
 
-- **Mod Support** - ValheimPlus, BepInEx mod framework integration
+- **Mod manager sync** - Pull a Thunderstore/r2modman profile into `/config/bepinex/plugins`
 - **Web Dashboard** - Browser-based server management
 - **Discord Integration** - Player join/leave notifications
 - **RCON Support** - Remote server console
@@ -493,6 +535,7 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 - [Iron Gate AB](https://irongatestudio.se/) for creating Valheim
 - [Valve/Steam](https://store.steampowered.com/) for SteamCMD
+- [BepInEx](https://github.com/BepInEx/BepInEx) and [denikson / AzumattDev](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/) for BepInExPack_Valheim
 - The Valheim dedicated server community
 
 ---

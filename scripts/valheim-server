@@ -78,38 +78,99 @@ start_server() {
     # Set required environment variables for Valheim
     export SteamAppId="${VALHEIM_CLIENT_APP_ID}"
     export LD_LIBRARY_PATH="${VALHEIM_SERVER_PATH}/linux64:${LD_LIBRARY_PATH}"
-    
+
     # Build arguments
     local args
     args=$(build_server_args)
-    
+
     log_info "Server arguments: ${args}"
     log_info "Working directory: ${VALHEIM_SERVER_PATH}"
-    
+
     # Change to server directory
     cd "${VALHEIM_SERVER_PATH}"
-    
+
     # Create PID file directory
     mkdir -p "$(dirname "${VALHEIM_SERVER_PID}")"
-    
-    # Start server in background with log filtering
-    eval "${VALHEIM_SERVER_BINARY}" ${args} 2>&1 | /opt/valheim/scripts/valheim-logfilter &
-    
+
+    # BepInEx: build the doorstop environment for the game binary ONLY.
+    # libdoorstop must never be preloaded into bash/pgrep/the log filter, so
+    # the variables go through `env` in front of the binary, not `export`.
+    local -a launch_env=()
+    if is_bepinex_variant; then
+        # Idempotent; also repairs a server dir that a restore or Steam
+        # re-validate left without the overlay.
+        /opt/valheim/scripts/valheim-bepinex install || log_error "BepInEx overlay install failed"
+        # A stale log from the previous run would let modcheck report a false
+        # "loaded"; BepInEx rewrites it only when it actually injects.
+        rm -f "${BEPINEX_LOG_FILE}"
+    fi
+
+    if is_bepinex_enabled; then
+        if [[ -f "${BEPINEX_ENV_FILE}" ]]; then
+            while IFS= read -r line; do
+                [[ -n "${line}" ]] && launch_env+=("${line}")
+            done < "${BEPINEX_ENV_FILE}"
+            log_info "BepInEx: enabled ($(get_bepinex_installed_version)), plugins: ${BEPINEX_CONFIG_PATH}/plugins"
+        else
+            log_error "BepInEx enabled but ${BEPINEX_ENV_FILE} missing; starting WITHOUT mods"
+        fi
+    elif is_bepinex_variant; then
+        if is_safe_mode; then
+            log_warn "BepInEx: SAFE_MODE engaged - starting WITHOUT mods ('valheim-dr safe-mode off' to re-enable)"
+        else
+            log_warn "BepInEx: disabled via BEPINEX_ENABLED=${BEPINEX_ENABLED:-false}"
+        fi
+    fi
+
+    # Start server in background with log filtering.
+    # `eval` preserves the historical quoting semantics of SERVER_ARGS.
+    if [[ ${#launch_env[@]} -gt 0 ]]; then
+        local env_quoted
+        env_quoted=$(printf '%q ' "${launch_env[@]}")
+        eval env ${env_quoted} "${VALHEIM_SERVER_BINARY}" ${args} 2>&1 | /opt/valheim/scripts/valheim-logfilter &
+    else
+        eval "${VALHEIM_SERVER_BINARY}" ${args} 2>&1 | /opt/valheim/scripts/valheim-logfilter &
+    fi
+
     # Wait a moment for the process to start
     sleep 3
-    
+
     # Find and save the actual server PID
     local actual_pid
     actual_pid=$(pgrep -f "valheim_server.x86_64" | head -1)
-    
+
     if [[ -n "${actual_pid}" ]]; then
         echo "${actual_pid}" > "${VALHEIM_SERVER_PID}"
         log_success "Server started with PID: ${actual_pid}"
+        spawn_modcheck
         return 0
     else
         log_error "Failed to start server"
         return 1
     fi
+}
+
+# -----------------------------------------------------------------------------
+# Spawn the detached mod-load verifier (bepinex variant only)
+# -----------------------------------------------------------------------------
+# setsid puts modcheck in its own session so a supervisor-driven restart of the
+# valheim-server group (stopasgroup) cannot kill the check that may have
+# requested that very restart (rollback / safe-mode policies).
+spawn_modcheck() {
+    is_bepinex_variant || return 0
+
+    if [[ -f "${MODCHECK_PID_FILE}" ]]; then
+        local old_pid
+        old_pid=$(cat "${MODCHECK_PID_FILE}" 2>/dev/null)
+        if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
+            kill "${old_pid}" 2>/dev/null || true
+        fi
+        rm -f "${MODCHECK_PID_FILE}"
+    fi
+
+    setsid /opt/valheim/scripts/valheim-modcheck --wait "${MODCHECK_TIMEOUT:-300}" \
+        >> "${LOG_PATH}/modcheck.log" 2>&1 < /dev/null &
+    log_info "Modcheck scheduled (timeout ${MODCHECK_TIMEOUT:-300}s, policy ${MOD_FAILURE_POLICY:-hold})"
 }
 
 # -----------------------------------------------------------------------------

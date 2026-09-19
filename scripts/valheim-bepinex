@@ -1,0 +1,207 @@
+#!/bin/bash
+# =============================================================================
+# Valheim BepInEx - Installs the pinned BepInExPack_Valheim overlay into the
+# server directory and wires persistent plugin/config storage under /config.
+#
+# Usage: valheim-bepinex {install|status|env}
+#
+#   install  Idempotent. Copies the pack from the read-only image layer
+#            (/opt/valheim/bepinex) into /opt/valheim/server when the installed
+#            marker is missing or the version differs, then replaces
+#            BepInEx/{plugins,config,patchers} with symlinks into
+#            /config/bepinex so operator state survives image upgrades and
+#            server-file restores. Regenerates .bepinex.env from the pack's
+#            own start_server_bepinex.sh so doorstop variable renames upstream
+#            do not require a code change here.
+#   status   Prints a one-line summary.
+#   env      Prints the generated launch environment (KEY=VALUE per line).
+# =============================================================================
+
+if ! source /opt/valheim/scripts/common; then
+    echo "[ERROR] Failed to source common functions"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Generate .bepinex.env from the pack's launch script
+# -----------------------------------------------------------------------------
+# The pack ships start_server_bepinex.sh with a block of `export` lines that
+# describe how to preload doorstop. We evaluate ONLY those exports in a clean
+# subshell and dump the resulting values as KEY=VALUE, so valheim-server can
+# apply them to the game binary alone (never to bash, pgrep, or the log filter,
+# which must not have libdoorstop preloaded).
+generate_env_file() {
+    local launch_script="${VALHEIM_SERVER_PATH}/start_server_bepinex.sh"
+
+    if [[ ! -f "${launch_script}" ]]; then
+        log_error "Pack launch script missing: ${launch_script}"
+        return 1
+    fi
+
+    local exports
+    exports=$(grep -E '^[[:space:]]*export[[:space:]]+(DOORSTOP_[A-Z_]+|LD_LIBRARY_PATH|LD_PRELOAD)=' "${launch_script}" || true)
+
+    if [[ -z "${exports}" ]]; then
+        log_error "No doorstop exports found in ${launch_script}; pack layout changed?"
+        return 1
+    fi
+
+    (
+        cd "${VALHEIM_SERVER_PATH}" || exit 1
+        unset LD_LIBRARY_PATH LD_PRELOAD
+        # shellcheck disable=SC2086
+        eval "${exports}"
+        # Always include the Valheim native libs alongside doorstop's.
+        case ":${LD_LIBRARY_PATH:-}:" in
+            *":./linux64:"*) ;;
+            *) LD_LIBRARY_PATH="./linux64:${LD_LIBRARY_PATH:-}" ;;
+        esac
+        for var in "${!DOORSTOP_@}" LD_LIBRARY_PATH LD_PRELOAD; do
+            [[ -n "${!var:-}" ]] || continue
+            printf '%s=%s\n' "${var}" "$(printf '%s' "${!var}" | sed 's/:*$//')"
+        done
+    ) > "${BEPINEX_ENV_FILE}.tmp" || return 1
+
+    mv "${BEPINEX_ENV_FILE}.tmp" "${BEPINEX_ENV_FILE}"
+
+    if ! grep -q '^DOORSTOP_' "${BEPINEX_ENV_FILE}" || ! grep -q '^LD_PRELOAD=' "${BEPINEX_ENV_FILE}"; then
+        log_error "Generated ${BEPINEX_ENV_FILE} is incomplete:"
+        cat "${BEPINEX_ENV_FILE}"
+        return 1
+    fi
+
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Persist a BepInEx subdirectory under /config via symlink
+# -----------------------------------------------------------------------------
+persist_dir() {
+    local name="$1"
+    local target="${BEPINEX_CONFIG_PATH}/${name}"
+    local link="${VALHEIM_SERVER_PATH}/BepInEx/${name}"
+
+    mkdir -p "${target}"
+
+    if [[ -L "${link}" ]]; then
+        if [[ "$(readlink "${link}")" == "${target}" ]]; then
+            return 0
+        fi
+        rm -f "${link}"
+    elif [[ -d "${link}" ]]; then
+        # Seed persistent storage with whatever the pack shipped (e.g. the
+        # default BepInEx.cfg) without overwriting operator-edited files.
+        cp -an "${link}/." "${target}/" 2>/dev/null || true
+        rm -rf "${link}"
+    fi
+
+    ln -s "${target}" "${link}"
+    log_info "BepInEx/${name} -> ${target}"
+}
+
+# -----------------------------------------------------------------------------
+# Install / upgrade the overlay
+# -----------------------------------------------------------------------------
+install_overlay() {
+    if ! is_bepinex_variant; then
+        log_info "Not a bepinex image (VALHEIM_VARIANT=${VALHEIM_VARIANT}); nothing to install"
+        return 0
+    fi
+
+    local pack_version installed_version
+    pack_version=$(get_bepinex_pack_version)
+    installed_version=$(get_bepinex_installed_version)
+
+    mkdir -p "${VALHEIM_SERVER_PATH}" "${BEPINEX_CONFIG_PATH}"
+
+    local need_copy=false
+    if [[ "${installed_version}" != "${pack_version}" ]]; then
+        need_copy=true
+    elif [[ ! -f "${VALHEIM_SERVER_PATH}/BepInEx/core/BepInEx.Preloader.dll" ]] \
+      || [[ ! -f "${VALHEIM_SERVER_PATH}/doorstop_libs/libdoorstop_x64.so" ]] \
+      || [[ ! -f "${VALHEIM_SERVER_PATH}/start_server_bepinex.sh" ]]; then
+        log_warn "BepInEx marker says ${installed_version} but core files are missing; reinstalling"
+        need_copy=true
+    fi
+
+    if [[ "${need_copy}" == "true" ]]; then
+        log_info "Installing BepInExPack_Valheim ${pack_version} (was: ${installed_version:-none})"
+
+        # Never clobber persistent dirs: copy everything except the three
+        # operator-owned subtrees, which are handled by persist_dir below.
+        (
+            cd "${BEPINEX_PACK_PATH}" || exit 1
+            tar --exclude='./BepInEx/plugins' \
+                --exclude='./BepInEx/config' \
+                --exclude='./BepInEx/patchers' \
+                --exclude='./.pack_version' \
+                -cf - .
+        ) | (cd "${VALHEIM_SERVER_PATH}" && tar -xf -) || {
+            log_error "Failed to copy BepInEx pack into ${VALHEIM_SERVER_PATH}"
+            return 1
+        }
+
+        # Seed default config on first install only (persist_dir never overwrites).
+        if [[ -d "${BEPINEX_PACK_PATH}/BepInEx/config" ]]; then
+            mkdir -p "${BEPINEX_CONFIG_PATH}/config"
+            cp -an "${BEPINEX_PACK_PATH}/BepInEx/config/." "${BEPINEX_CONFIG_PATH}/config/" 2>/dev/null || true
+        fi
+    fi
+
+    mkdir -p "${VALHEIM_SERVER_PATH}/BepInEx"
+    persist_dir plugins
+    persist_dir config
+    persist_dir patchers
+
+    if ! generate_env_file; then
+        return 1
+    fi
+
+    echo "${pack_version}" > "${BEPINEX_VERSION_MARKER}"
+    chown -R "${PUID:-1000}:${PGID:-1000}" "${BEPINEX_CONFIG_PATH}" 2>/dev/null || true
+
+    log_success "BepInEx ${pack_version} ready (plugins: ${BEPINEX_CONFIG_PATH}/plugins)"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Status
+# -----------------------------------------------------------------------------
+print_status() {
+    local plugin_count=0
+    if [[ -d "${BEPINEX_CONFIG_PATH}/plugins" ]]; then
+        plugin_count=$(find "${BEPINEX_CONFIG_PATH}/plugins" -maxdepth 2 -name '*.dll' 2>/dev/null | wc -l)
+    fi
+
+    echo "variant=${VALHEIM_VARIANT}" \
+         "supported=$(is_bepinex_variant && echo true || echo false)" \
+         "enabled=$(is_bepinex_enabled && echo true || echo false)" \
+         "safe_mode=$(is_safe_mode && echo true || echo false)" \
+         "pack_version=$(get_bepinex_pack_version)" \
+         "installed_version=$(get_bepinex_installed_version)" \
+         "plugin_dlls=${plugin_count}"
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+case "${1:-install}" in
+    install)
+        install_overlay
+        ;;
+    status)
+        print_status
+        ;;
+    env)
+        if [[ -f "${BEPINEX_ENV_FILE}" ]]; then
+            cat "${BEPINEX_ENV_FILE}"
+        else
+            echo "(not installed)" >&2
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {install|status|env}"
+        exit 1
+        ;;
+esac

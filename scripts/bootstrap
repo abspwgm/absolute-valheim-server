@@ -36,6 +36,20 @@ mkdir -p "${BACKUPS_PATH}"
 mkdir -p "${LOG_PATH}"
 mkdir -p "${PID_PATH}"
 mkdir -p "${VALHEIM_SERVER_PATH}"
+mkdir -p "${DR_SNAPSHOTS_PATH}"
+if is_bepinex_variant; then
+    mkdir -p "${BEPINEX_CONFIG_PATH}/plugins" "${BEPINEX_CONFIG_PATH}/config" "${BEPINEX_CONFIG_PATH}/patchers"
+fi
+
+# -----------------------------------------------------------------------------
+# Disaster-response state carried over from a previous run
+# -----------------------------------------------------------------------------
+if is_update_hold; then
+    log_warn "UPDATE_HOLD is set ($(cut -f2- "${DR_HOLD_FLAG}" 2>/dev/null)) - Steam update will be skipped"
+fi
+if is_safe_mode; then
+    log_warn "SAFE_MODE is set ($(cut -f2- "${DR_SAFE_MODE_FLAG}" 2>/dev/null)) - BepInEx will NOT be injected"
+fi
 
 # -----------------------------------------------------------------------------
 # Setup admin lists
@@ -104,16 +118,33 @@ fi
 log_success "Server binary found: ${VALHEIM_SERVER_BINARY}"
 
 # -----------------------------------------------------------------------------
+# BepInEx overlay (bepinex variant only)
+# -----------------------------------------------------------------------------
+if is_bepinex_variant; then
+    if ! /opt/valheim/scripts/valheim-bepinex install; then
+        log_error "BepInEx overlay installation failed; the server will start WITHOUT mods"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # Display configuration
 # -----------------------------------------------------------------------------
 log_info "=========================================="
 log_info "Server Configuration:"
+log_info "  Variant: ${VALHEIM_VARIANT}"
+log_info "  Build: $(get_installed_build_id)"
 log_info "  Name: $(get_server_name)"
 log_info "  World: $(get_world_name)"
 log_info "  Port: $(get_server_port)"
 log_info "  Public: $(is_server_public && echo 'Yes' || echo 'No')"
 log_info "  Crossplay: $(is_crossplay_enabled && echo 'Enabled' || echo 'Disabled')"
 log_info "  Backups: $(is_backups_enabled && echo 'Enabled' || echo 'Disabled')"
+if is_bepinex_variant; then
+    log_info "  BepInEx: $(is_bepinex_enabled && echo "Enabled ($(get_bepinex_installed_version))" || echo 'DISABLED')"
+    log_info "  Mod failure policy: ${MOD_FAILURE_POLICY:-hold} (strict health: ${MODCHECK_STRICT:-false})"
+fi
+log_info "  DR snapshot before update: $(is_true "${DR_SNAPSHOT_BEFORE_UPDATE:-false}" && echo 'Yes' || echo 'No') (keep ${DR_KEEP_SNAPSHOTS:-2})"
+log_info "  Update hold: $(is_update_hold && echo 'ACTIVE' || echo 'No')"
 log_info "=========================================="
 
 # -----------------------------------------------------------------------------
