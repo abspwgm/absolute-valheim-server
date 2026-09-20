@@ -1,0 +1,24 @@
+# =============================================================================
+# Absolute Valheim Server - conformance with the Absolute engineering standard
+# =============================================================================
+# Checks .absolute/policy.yml against the standard, and both against this
+# repository. See https://github.com/abspwgm/absolute-standard
+# =============================================================================
+
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Conformance
+    uses: abspwgm/absolute-standard/.github/workflows/conformance.yml@fad83f7faa00efd2b29b88ca332f7358c553ee05
+    with:
+      standard-ref: fad83f7faa00efd2b29b88ca332f7358c553ee05
