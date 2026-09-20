@@ -67,7 +67,16 @@ jobs:
 
   e2e-tests:
     name: End-to-End Tests (vanilla)
-    runs-on: ubuntu-latest
+    # Fork pull requests NEVER run on our own hardware: a fork can change the
+    # workflow and the tests it runs, and this runner sits on the same machine
+    # as the game servers. They go to a GitHub-hosted runner, which is free for
+    # public repositories. Everything else takes the org runner pool, which has
+    # the Steam depot cache and no 6-hour job limit.
+    runs-on: ${{ fromJSON(
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name != github.repository)
+      && '["ubuntu-latest"]'
+      || '["self-hosted","linux","x64","absolute-e2e"]') }}
     timeout-minutes: 60
 
     steps:
