@@ -179,13 +179,15 @@ public address often does not work from inside the same network.
 | Watch the log | `docker compose logs -f` |
 | Stop it (saves the world first) | `docker compose down` |
 | Start it again | `docker compose up -d` |
-| Update the game right now (skipped while someone is playing) | `docker exec valheim-server /opt/valheim/scripts/valheim-updater` |
+| Update the game right now (this restarts the server) | `docker exec valheim-server /opt/valheim/scripts/valheim-updater` |
 | Make a backup right now | `docker exec valheim-server /opt/valheim/scripts/valheim-backup --force` |
 | Get our latest fixes | `docker compose pull` then `docker compose up -d` |
 
 **Updates.** The server updates the game each time it starts. To also check on a
 schedule, add a line such as `- UPDATE_CRON=30 5 * * *` (every day at 05:30) under
-`environment:` and run `docker compose up -d`. It never updates while someone is playing.
+`environment:` and run `docker compose up -d`. Pick an hour when nobody plays: a scheduled
+update restarts the server even if people are connected
+([#6](https://github.com/abspwgm/absolute-valheim-server/issues/6)).
 
 **Backups.** A backup is made every hour into `data/config/backups` inside your server
 folder, as a file named like `valheim_Dedicated_20260101_120000.zip`. With the settings
