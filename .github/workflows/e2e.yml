@@ -238,11 +238,21 @@ jobs:
       # ---------------------------------------------------------------------
       # Update Server File Cache
       # ---------------------------------------------------------------------
+      # This must run on every runner, hosted or not. The container writes into
+      # data/server as root, and on a self-hosted runner the workspace outlives
+      # the job: the next checkout then fails with EACCES trying to remove
+      # steamapps/downloading. A hosted runner is discarded, which is the only
+      # reason skipping it there would be harmless.
+      - name: Reclaim ownership of server files
+        if: always()
+        run: |
+          # The container wrote these as root/uid 1000; everything after this
+          # runs as the runner user.
+          sudo chown -R "$(id -u):$(id -g)" data/server || true
+
       - name: Prepare server files for cache
         if: always() && runner.environment != 'self-hosted' && steps.server-cache.outputs.cache-hit != 'true'
         run: |
-          # The container wrote these as root/uid 1000; the cache tar runs as the runner user
-          sudo chown -R "$(id -u):$(id -g)" data/server
           # Drop Steam scratch space and the overlay's per-run log
           rm -rf data/server/steamapps/downloading data/server/steamapps/temp data/server/BepInEx/LogOutput.log
           du -sh data/server || true
