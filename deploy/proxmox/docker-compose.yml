@@ -1,9 +1,10 @@
 # =============================================================================
-# Absolute Valheim Server - two servers on one Docker host (Proxmox VM)
+# Absolute Valheim Server - two servers on one Docker host
 # =============================================================================
-# Runs the vanilla artifact and the BepInEx artifact side by side on the Game
-# Server VLAN. Each server needs its own contiguous UDP port triple; UniFi
-# forwards each triple to this VM's static address.
+# An overlay that runs the vanilla artifact and the BepInEx artifact side by
+# side on one Docker host. Each server gets its own UDP port pair, and each
+# pair must be forwarded on your router to the Docker host. Port forwarding:
+#   https://github.com/abspwgm/absolute-game-servers/blob/main/docs/port-forwarding.md
 #
 #   valheim-vanilla   UDP 2456-2457   fireaimready/absolute-valheim-server:latest
 #   valheim-bepinex   UDP 2466-2467   fireaimready/absolute-valheim-server:bepinex
