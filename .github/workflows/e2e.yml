@@ -27,6 +27,21 @@ on:
 permissions:
   contents: read
 
+# The self-hosted pool shares one Docker daemon across runner instances, and
+# this suite uses fixed container names (valheim-server). Two runs of this
+# workflow at once therefore tear down each other's containers: the symptom is
+# a test failing with "cannot exec in a stopped state" while the container sits
+# in Status=removing with ExitCode 0.
+#
+# Serialised per repository rather than per ref, because the collision is over
+# container names, not over the branch. Different games still run in parallel,
+# which is what the extra runner instances are for. In-progress runs are not
+# cancelled: killing a suite mid-flight leaves containers and volumes behind on
+# a runner that is not thrown away between jobs.
+concurrency:
+  group: e2e-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   VALHEIM_APP_ID: '896660'
   VALHEIM_VARIANT: vanilla
