@@ -6,7 +6,7 @@
 # Don't use set -e - handle errors explicitly for better diagnostics
 
 # Source common functions
-if ! source /opt/valheim/scripts/common; then
+if ! source "${VALHEIM_SCRIPTS_PATH:-/opt/valheim/scripts}/common"; then
     echo "[ERROR] Failed to source common functions"
     exit 1
 fi
@@ -136,11 +136,17 @@ cleanup_old_backups() {
     # Remove backups older than max_age days
     if [[ ${max_age} -gt 0 ]]; then
         local deleted_age=0
+        # The name tests must stay grouped. Without the parentheses, -o binds
+        # more loosely than the implicit -a, so -mtime and -print0 attached to
+        # the .tar.gz branch alone, and .zip backups - the default format -
+        # were never pruned by age (#4).
         while IFS= read -r -d '' file; do
             log_info "Removing old backup: $(basename "${file}")"
             rm -f "${file}"
             deleted_age=$((deleted_age + 1))
-        done < <(find "${backup_dir}" -maxdepth 1 -name "valheim_*.zip" -o -name "valheim_*.tar.gz" -mtime +${max_age} -print0 2>/dev/null)
+        done < <(find "${backup_dir}" -maxdepth 1 \
+            \( -name "valheim_*.zip" -o -name "valheim_*.tar.gz" \) \
+            -mtime "+${max_age}" -print0 2>/dev/null)
         
         if [[ ${deleted_age} -gt 0 ]]; then
             log_info "Removed ${deleted_age} backups older than ${max_age} days"
@@ -200,5 +206,8 @@ main() {
     return 0
 }
 
-# Run main
-main
+# Run main only when executed, so tests can source this file and call
+# cleanup_old_backups directly.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main
+fi
