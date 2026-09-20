@@ -13,8 +13,11 @@ name: E2E Tests
 on:
   push:
     branches: [main, develop]
+  # Any base, not just main. A pull request stacked on another branch is still
+  # a change that has to be gated; filtering on [main] meant stacked work
+  # merged with no checks at all and only got tested once the stack landed.
   pull_request:
-    branches: [main]
+    branches: ['**']
   workflow_dispatch:
     inputs:
       skip_cache:
@@ -26,6 +29,21 @@ on:
 # Least privilege for GITHUB_TOKEN; no job here writes to the repo.
 permissions:
   contents: read
+
+# The self-hosted pool shares one Docker daemon across runner instances, and
+# this suite uses fixed container names (valheim-server). Two runs of this
+# workflow at once therefore tear down each other's containers: the symptom is
+# a test failing with "cannot exec in a stopped state" while the container sits
+# in Status=removing with ExitCode 0.
+#
+# Serialised per repository rather than per ref, because the collision is over
+# container names, not over the branch. Different games still run in parallel,
+# which is what the extra runner instances are for. In-progress runs are not
+# cancelled: killing a suite mid-flight leaves containers and volumes behind on
+# a runner that is not thrown away between jobs.
+concurrency:
+  group: e2e-${{ github.repository }}
+  cancel-in-progress: false
 
 env:
   VALHEIM_APP_ID: '896660'
@@ -67,7 +85,16 @@ jobs:
 
   e2e-tests:
     name: End-to-End Tests (vanilla)
-    runs-on: ubuntu-latest
+    # Fork pull requests NEVER run on our own hardware: a fork can change the
+    # workflow and the tests it runs, and this runner sits on the same machine
+    # as the game servers. They go to a GitHub-hosted runner, which is free for
+    # public repositories. Everything else takes the org runner pool, which has
+    # the Steam depot cache and no 6-hour job limit.
+    runs-on: ${{ fromJSON(
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name != github.repository)
+      && '["ubuntu-latest"]'
+      || '["self-hosted","linux","x64","absolute-e2e"]') }}
     timeout-minutes: 60
 
     steps:
@@ -97,8 +124,28 @@ jobs:
         id: cache-key
         run: echo "key=valheim-server-${{ env.VALHEIM_VARIANT }}-${{ env.VALHEIM_APP_ID }}-$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
+      # On the self-hosted pool the depot cache is already on local disk, kept
+      # current by a root-owned timer. Copying from it beats pulling the same
+      # gigabytes back from GitHub's cache service over the internet.
+      # It is a copy, never a hardlink: the suite runs steamcmd against these
+      # files, and a hardlink would let a job write through into the cache that
+      # feeds every published image.
+      - name: Seed server files from the local depot cache
+        id: local-cache
+        if: ${{ runner.environment == 'self-hosted' && github.event.inputs.skip_cache != 'true' }}
+        run: |
+          src="/srv/steam-cache/${{ env.VALHEIM_APP_ID }}"
+          if [ -f "${src}/valheim_server.x86_64" ]; then
+            cp -a "${src}/." data/server/
+            echo "seeded=true" >> "$GITHUB_OUTPUT"
+            echo "✅ seeded from ${src} ($(du -sh data/server | cut -f1))"
+          else
+            echo "seeded=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ no usable local depot cache at ${src}; falling back"
+          fi
+
       - name: Restore server file cache
-        if: ${{ github.event.inputs.skip_cache != 'true' }}
+        if: ${{ github.event.inputs.skip_cache != 'true' && steps.local-cache.outputs.seeded != 'true' }}
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: server-cache
         with:
@@ -191,17 +238,27 @@ jobs:
       # ---------------------------------------------------------------------
       # Update Server File Cache
       # ---------------------------------------------------------------------
-      - name: Prepare server files for cache
-        if: always() && steps.server-cache.outputs.cache-hit != 'true'
+      # This must run on every runner, hosted or not. The container writes into
+      # data/server as root, and on a self-hosted runner the workspace outlives
+      # the job: the next checkout then fails with EACCES trying to remove
+      # steamapps/downloading. A hosted runner is discarded, which is the only
+      # reason skipping it there would be harmless.
+      - name: Reclaim ownership of server files
+        if: always()
         run: |
-          # The container wrote these as root/uid 1000; the cache tar runs as the runner user
-          sudo chown -R "$(id -u):$(id -g)" data/server
+          # The container wrote these as root/uid 1000; everything after this
+          # runs as the runner user.
+          sudo chown -R "$(id -u):$(id -g)" data/server || true
+
+      - name: Prepare server files for cache
+        if: always() && runner.environment != 'self-hosted' && steps.server-cache.outputs.cache-hit != 'true'
+        run: |
           # Drop Steam scratch space and the overlay's per-run log
           rm -rf data/server/steamapps/downloading data/server/steamapps/temp data/server/BepInEx/LogOutput.log
           du -sh data/server || true
 
       - name: Save server files to cache
-        if: always() && steps.server-cache.outputs.cache-hit != 'true' && hashFiles('data/server/valheim_server.x86_64') != ''
+        if: always() && runner.environment != 'self-hosted' && steps.server-cache.outputs.cache-hit != 'true' && hashFiles('data/server/valheim_server.x86_64') != ''
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: data/server
