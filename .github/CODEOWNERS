@@ -1,3 +1,6 @@
-# Every change needs an approving review from a project owner before it can merge.
+# The project owner for every path. GitHub requests their review automatically.
+# Review is not currently required to merge: with one owner account, an approval
+# the author cannot give would block every change. Required status checks and
+# CodeQL still gate the merge.
 # Policy: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/README.md
-*   @fireaimready
+*   @abspowergaming
