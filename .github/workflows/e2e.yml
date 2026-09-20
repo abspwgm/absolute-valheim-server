@@ -56,6 +56,9 @@ jobs:
             scripts/valheim-bepinex scripts/valheim-modcheck scripts/valheim-dr \
             tests/e2e/test_dr_snapshot_restore.sh tests/e2e/test_bepinex_*.sh
 
+      - name: Player count unit test
+        run: bash tests/test_player_count.sh
+
   e2e-tests:
     name: End-to-End Tests (vanilla)
     runs-on: ubuntu-latest
