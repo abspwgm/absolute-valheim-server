@@ -19,6 +19,14 @@ CONTAINER="valheim-server"
 SERVER_LOG="/var/log/valheim/valheim-server.log"
 FAKE_STEAM_ID="76561198000000001"
 
+# Whatever happens, do not leave the simulated player connected: a lingering
+# connect line would make every later backup and update skip itself.
+disconnect_fake_player() {
+    docker exec "${CONTAINER}" bash -c \
+        "printf '%s\n' 'Closing socket ${FAKE_STEAM_ID}' >> ${SERVER_LOG}" 2>/dev/null || true
+}
+trap disconnect_fake_player EXIT
+
 # Ask the library, inside the container, how many players it sees.
 container_player_count() {
     docker exec "${CONTAINER}" bash -c \
@@ -62,7 +70,8 @@ test_idle_guard() {
     # promises and the reason #6 mattered: the updater used to restart the
     # server on top of a live session.
     local updater_output
-    updater_output="$(docker exec "${CONTAINER}" valheim-updater 2>&1 || true)"
+    updater_output="$(docker exec "${CONTAINER}" \
+        /opt/valheim/scripts/valheim-updater 2>&1 || true)"
     if echo "${updater_output}" | grep -q "Players are connected, skipping update"; then
         log_success "valheim-updater skipped the update while a player was connected"
     else
