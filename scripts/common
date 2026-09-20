@@ -37,7 +37,7 @@ VALHEIM_SCRIPTS_PATH="/opt/valheim/scripts"
 CONFIG_PATH="/config"
 WORLDS_PATH="${CONFIG_PATH}/worlds_local"
 BACKUPS_PATH="${BACKUPS_DIRECTORY:-${CONFIG_PATH}/backups}"
-LOG_PATH="/var/log/valheim"
+LOG_PATH="${LOG_PATH:-/var/log/valheim}"
 PID_PATH="/var/run/valheim"
 
 VALHEIM_SERVER_PID="${PID_PATH}/valheim-server.pid"
@@ -191,19 +191,65 @@ get_server_pid() {
     fi
 }
 
+# Number of players currently connected, derived from the server log.
+#
+# This used to read ${VALHEIM_SERVER_PATH}/htdocs/status.json, which nothing in
+# the image ever wrote, so it always answered 0: is_server_idle was always true
+# and a scheduled update would restart the server on top of connected players
+# (#6). The log is the only record of connections the server actually gives us.
+#
+# A player is connected when "Got connection SteamID <id>" has no later
+# "Closing socket <id>". valheim-logfilter never filters either line out.
 get_player_count() {
-    # Parse server status for connected players
-    # This is a simplified implementation - actual implementation would query the server
-    local status_file="${VALHEIM_SERVER_PATH}/htdocs/status.json"
-    if [[ -f "${status_file}" ]]; then
-        jq -r '.player_count // 0' "${status_file}" 2>/dev/null || echo "0"
-    else
+    local log_file="${LOG_PATH}/valheim-server.log"
+
+    if [[ ! -r "${log_file}" ]]; then
         echo "0"
+        return 0
     fi
+
+    awk '
+        # The log is appended across restarts, so connections recorded before
+        # this startup line are stale and must not be counted forever. Only a
+        # definitive startup marker resets: over-resetting would hide live
+        # players, which is the failure this function exists to prevent.
+        /Steam game server initialized/ {
+            for (id in connected) { delete connected[id] }
+        }
+        /Got connection SteamID/ {
+            if (match($0, /Got connection SteamID[ \t]+[0-9]+/)) {
+                id = substr($0, RSTART, RLENGTH)
+                sub(/Got connection SteamID[ \t]+/, "", id)
+                connected[id] = 1
+            }
+        }
+        /Closing socket/ {
+            if (match($0, /Closing socket[ \t]+[0-9]+/)) {
+                id = substr($0, RSTART, RLENGTH)
+                sub(/Closing socket[ \t]+/, "", id)
+                delete connected[id]
+            }
+        }
+        END {
+            n = 0
+            for (id in connected) { n++ }
+            print n
+        }
+    ' "${log_file}" 2>/dev/null || echo "0"
 }
 
 is_server_idle() {
     local players
+
+    # Fail closed. If the server is up but its log cannot be read, we cannot
+    # prove that nobody is connected, and the promise this guard exists to keep
+    # is that an update never lands on top of a live session. Claiming "idle"
+    # here would break exactly that promise, so assume players are present.
+    if is_server_running && [[ ! -r "${LOG_PATH}/valheim-server.log" ]]; then
+        log_warn "Cannot read ${LOG_PATH}/valheim-server.log; assuming players are connected"
+        return 1
+    fi
+
     players=$(get_player_count)
     [[ "${players}" == "0" ]]
 }

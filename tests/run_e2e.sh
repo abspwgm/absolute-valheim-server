@@ -322,6 +322,7 @@ ALL_TESTS=(
     "backup"
     "graceful_shutdown"
     "restart_update"
+    "idle_guard"
     "dr_snapshot_restore"
 )
 
@@ -335,6 +336,7 @@ if [[ "${VALHEIM_VARIANT}" == "bepinex" ]]; then
         "backup"
         "graceful_shutdown"
         "restart_update"
+        "idle_guard"
         "dr_snapshot_restore"
         "bepinex_safe_mode"
         "bepinex_disaster_drill"
