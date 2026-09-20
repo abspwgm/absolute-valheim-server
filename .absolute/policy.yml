@@ -1,0 +1,198 @@
+# Local policy for absolute-valheim-server.
+# Checked on every push against https://github.com/abspwgm/absolute-standard.
+project: absolute-valheim-server
+standard_version: "1.0.0"
+
+audience: >-
+  someone who has never used Docker, a terminal or a router's settings page, and
+  wants a Valheim server their friends can join tonight
+
+contract:
+  - The environment variables documented in the README and docs/INSTALL.md
+  - The published tags: latest, vanilla, bepinex, <semver>, sha-<sha>, and their -bepinex forms
+  - The `valheim-dr` operator commands: status, snapshot, list, restore, prune, hold, release, safe-mode
+  - The volume layout /config and /opt/valheim/server
+  - MOD_FAILURE_POLICY and its default, hold
+
+tiers:
+  fast:
+    gates: push
+    command: shellcheck -S error -s bash -x scripts/* tests/*.sh tests/e2e/*.sh
+    budget: under a minute
+  merge:
+    gates: merge
+    command: bash tests/run_e2e.sh
+    budget: around 20 minutes, both variants
+  release:
+    gates: release
+    command: bash tests/run_e2e.sh && gh workflow run bepinex.yml
+    budget: as long as it takes; the bepinex suite includes the disaster drills
+
+security:
+  layers:
+    L1:
+      requirements:
+        default_branch_protected:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/rulesets/default-branch.json
+          reason: >-
+            Applied as a repository ruleset from the governance definitions in
+            the hub repository, not as a file in this repository.
+        required_checks_declared:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/required-checks.json
+          reason: The required check list is declared with the rulesets in the hub repository.
+        secret_scanning_enabled:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-valheim-server/settings/security_analysis
+          reason: >-
+            Secret scanning and push protection are repository settings, visible
+            under Security and analysis.
+        no_secrets_in_repository: .github/workflows/conformance.yml
+        no_deployment_detail_in_public: SECURITY.md
+        licence_declared: LICENSE
+      controls:
+        - id: deployment-runbook-purged
+          description: >-
+            The hosting runbook was removed from this public repository in 2026-09
+            and never returns: no network layout, addresses or firewall rules in
+            the code, docs, commit messages or PR bodies. The deploy/ overlay
+            ships generic comments only.
+          verified_by: deploy/proxmox/.env.example
+    L2:
+      requirements:
+        inputs_pinned_immutably: Dockerfile
+        pins_verified_before_use: Dockerfile
+        unpinned_input_refused: Dockerfile
+        pins_move_by_pr:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/rulesets/default-branch.json
+          reason: >-
+            The branch ruleset blocks direct pushes, so BEPINEX_VERSION and
+            BEPINEX_SHA256 can only move through a reviewed pull request.
+        vulnerable_dependencies_block_release:
+          status: exception
+          exception: no-vulnerability-gate
+      controls:
+        - id: bepinex-pinned-by-version-and-hash
+          description: >-
+            BepInExPack is pinned by version and sha256 in the Dockerfile and
+            verified before extraction; the two values bump together in one PR.
+          verified_by: Dockerfile
+        - id: mod-set-locked
+          description: >-
+            The modded image resolves its plugin set through mods.lock, pinned
+            by sha256, and the mod check counts the loaded plugins against
+            BEPINEX_EXPECT_PLUGINS on every start.
+          verified_by: scripts/valheim-modcheck
+    L3:
+      requirements:
+        least_privilege_tokens: .github/workflows/publish.yml
+        no_secrets_in_build_args: Dockerfile
+        ephemeral_runners: .github/workflows/e2e.yml
+        fork_pr_cannot_publish: .github/workflows/publish.yml
+      controls:
+        - id: independent-pipelines
+          description: >-
+            The vanilla and bepinex artifacts have separate workflows on
+            purpose, so a mod break on a game patch can never block the
+            unmodded image people depend on.
+          verified_by: .github/workflows/bepinex.yml
+    L4:
+      requirements:
+        provenance_and_sbom_attached: .github/workflows/publish.yml
+        only_distributable_content:
+          status: exception
+          exception: steamcmd-and-bepinex-baked-in
+        published_only_after_merge_tier: .github/workflows/publish.yml
+    L5:
+      requirements:
+        least_privilege_runtime:
+          status: exception
+          exception: server-runs-as-root
+        admin_interfaces_private:
+          status: not_applicable
+          reason: >-
+            The image exposes only the game's own UDP ports. There is no remote
+            console, web admin or management interface to bind privately.
+        default_credentials_refused:
+          status: not_applicable
+          reason: >-
+            There is no admin credential. The join password is passed to the
+            game server, which enforces its own minimum length and rejects a
+            password contained in the server name.
+        fail_closed_on_state_destroying_paths: scripts/valheim-modcheck
+        honest_health_reporting: scripts/healthcheck
+      controls:
+        - id: modcheck-holds-by-default
+          description: >-
+            When the mod check fails after a start, MOD_FAILURE_POLICY defaults
+            to hold: the server stops taking Steam updates and waits for a
+            person rather than retrying into a broken world.
+          verified_by: tests/e2e/test_bepinex_safe_mode.sh
+        - id: health-tells-the-truth
+          description: >-
+            A container whose mods failed to load reports unhealthy even though
+            the server process is up, and names the command that explains why.
+          verified_by: scripts/healthcheck
+      fail_closed:
+        - path: mod check after a start
+          reason: A world save is not worth an optimistic retry.
+        - path: BepInEx pack verification at build
+          reason: An unverified mod loader is arbitrary code next to a world.
+    L6:
+      requirements:
+        snapshot_before_risk: scripts/valheim-dr
+        hold_on_failed_verification: scripts/valheim-dr
+        restore_rehearsed_in_ci: tests/e2e/test_dr_snapshot_restore.sh
+        retention_exercised_by_test: tests/e2e/test_backup.sh
+      controls:
+        - id: disaster-drill-in-ci
+          description: >-
+            The bepinex suite destroys a working install and restores it from a
+            snapshot on every run, so the restore path is exercised rather than
+            assumed.
+          verified_by: tests/e2e/test_bepinex_disaster_drill.sh
+        - id: operator-cli
+          description: >-
+            One documented command per recovery action, and the destructive ones
+            name what they will replace before they replace it.
+          verified_by: docs/Disaster-Response.md
+    L7:
+      requirements:
+        scheduled_canary: .github/workflows/bepinex.yml
+        one_issue_per_failure_class: .github/workflows/bepinex.yml
+        security_policy_published: SECURITY.md
+        findings_kept_private: SECURITY.md
+      controls:
+        - id: nightly-mod-canary
+          description: >-
+            A nightly run boots the modded image against today's Steam build and
+            opens, updates or closes a single mod-canary issue, so "it still
+            works" is a claim with a date on it.
+          verified_by: .github/workflows/bepinex.yml
+
+exceptions:
+  - id: server-runs-as-root
+    reason: >-
+      supervisord starts valheim_server as root, although the image already
+      creates an unprivileged valheim user (uid 1000). Dropping privileges
+      changes the ownership of /config and every existing world directory, so it
+      needs a migration path for servers that are already running. It lands with
+      the shared base image, where the migration is written once.
+    expires: "2027-03-31"
+  - id: steamcmd-and-bepinex-baked-in
+    reason: >-
+      The image bakes SteamCMD, which is proprietary, and BepInExPack, whose
+      bundled binaries are not all licence-audited. Both are known audit items
+      in the hub's plan: either the audit clears them or they move to a
+      first-start download under the same pin and hash. There is also no test
+      yet that asserts no game binary or mod file is inside a published image.
+    expires: "2027-03-31"
+  - id: no-vulnerability-gate
+    reason: >-
+      Provenance and SBOM attestations are attached at publish, but nothing
+      scans them, so a known-vulnerable Debian package with a fix available does
+      not yet block a release. The scan lands as a shared compliance workflow
+      rather than being written three times.
+    expires: "2027-03-31"
