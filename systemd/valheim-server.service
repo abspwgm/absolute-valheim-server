@@ -1,6 +1,6 @@
 [Unit]
 Description=Valheim Dedicated Server
-Documentation=https://github.com/fireaimready/absolute-valheim-server
+Documentation=https://github.com/abspwgm/absolute-valheim-server
 Wants=network-online.target
 After=network-online.target
 
