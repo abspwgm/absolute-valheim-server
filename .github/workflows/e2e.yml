@@ -106,8 +106,28 @@ jobs:
         id: cache-key
         run: echo "key=valheim-server-${{ env.VALHEIM_VARIANT }}-${{ env.VALHEIM_APP_ID }}-$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
+      # On the self-hosted pool the depot cache is already on local disk, kept
+      # current by a root-owned timer. Copying from it beats pulling the same
+      # gigabytes back from GitHub's cache service over the internet.
+      # It is a copy, never a hardlink: the suite runs steamcmd against these
+      # files, and a hardlink would let a job write through into the cache that
+      # feeds every published image.
+      - name: Seed server files from the local depot cache
+        id: local-cache
+        if: ${{ runner.environment == 'self-hosted' && github.event.inputs.skip_cache != 'true' }}
+        run: |
+          src="/srv/steam-cache/${{ env.VALHEIM_APP_ID }}"
+          if [ -f "${src}/valheim_server.x86_64" ]; then
+            cp -a "${src}/." data/server/
+            echo "seeded=true" >> "$GITHUB_OUTPUT"
+            echo "✅ seeded from ${src} ($(du -sh data/server | cut -f1))"
+          else
+            echo "seeded=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ no usable local depot cache at ${src}; falling back"
+          fi
+
       - name: Restore server file cache
-        if: ${{ github.event.inputs.skip_cache != 'true' }}
+        if: ${{ github.event.inputs.skip_cache != 'true' && steps.local-cache.outputs.seeded != 'true' }}
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: server-cache
         with:
@@ -201,7 +221,7 @@ jobs:
       # Update Server File Cache
       # ---------------------------------------------------------------------
       - name: Prepare server files for cache
-        if: always() && steps.server-cache.outputs.cache-hit != 'true'
+        if: always() && runner.environment != 'self-hosted' && steps.server-cache.outputs.cache-hit != 'true'
         run: |
           # The container wrote these as root/uid 1000; the cache tar runs as the runner user
           sudo chown -R "$(id -u):$(id -g)" data/server
@@ -210,7 +230,7 @@ jobs:
           du -sh data/server || true
 
       - name: Save server files to cache
-        if: always() && steps.server-cache.outputs.cache-hit != 'true' && hashFiles('data/server/valheim_server.x86_64') != ''
+        if: always() && runner.environment != 'self-hosted' && steps.server-cache.outputs.cache-hit != 'true' && hashFiles('data/server/valheim_server.x86_64') != ''
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: data/server
