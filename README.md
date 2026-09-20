@@ -156,7 +156,7 @@ All configuration is done via environment variables in `docker-compose.yml`.
 | `UPDATE_ON_START` | `true` | Update server on container start |
 | `UPDATE_TIMEOUT` | `900` | Max update time (seconds) |
 | `UPDATE_CRON` | *(empty)* | Cron schedule for runtime updates |
-| `UPDATE_IF_IDLE` | `true` | Only update when no players |
+| `UPDATE_IF_IDLE` | `true` | Only update when no players. **Not working yet, see [#6](https://github.com/abspwgm/absolute-valheim-server/issues/6):** the server is always treated as empty |
 | `STEAMCMD_ARGS` | `validate` | Additional SteamCMD args |
 
 ### Backup Settings
@@ -169,7 +169,7 @@ All configuration is done via environment variables in `docker-compose.yml`.
 | `BACKUPS_MAX_AGE` | `3` | Days to keep backups |
 | `BACKUPS_MAX_COUNT` | `0` | Max backups (0=unlimited) |
 | `BACKUPS_ZIP` | `true` | Compress backups |
-| `BACKUPS_IF_IDLE` | `false` | Only backup when idle |
+| `BACKUPS_IF_IDLE` | `false` | Only backup when idle. Same limitation as `UPDATE_IF_IDLE` |
 
 ### Permission Settings
 
