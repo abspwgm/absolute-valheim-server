@@ -1,10 +1,12 @@
 # Absolute Valheim Server
 
-[![E2E Tests](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/e2e.yml/badge.svg)](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/e2e.yml)
-[![BepInEx Artifact](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/bepinex.yml/badge.svg)](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/bepinex.yml)
-[![Docker Image](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/publish.yml/badge.svg)](https://github.com/fireaimready/absolute-valheim-server/actions/workflows/publish.yml)
+[![E2E Tests](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/e2e.yml/badge.svg)](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/e2e.yml)
+[![BepInEx Artifact](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/bepinex.yml/badge.svg)](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/bepinex.yml)
+[![Docker Image](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/publish.yml/badge.svg)](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/publish.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/fireaimready/absolute-valheim-server)](https://hub.docker.com/r/fireaimready/absolute-valheim-server)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
+New to hosting? Start with the [step-by-step install guide](docs/INSTALL.md).
 
 A production-ready, containerized Valheim dedicated server with automatic updates, backups, log filtering, and comprehensive end-to-end testing. Ships as two artifacts: a stock **vanilla** image built for uptime, and a **BepInEx** image with a pinned mod loader and a disaster-response harness for the day a Valheim patch breaks your mods.
 
@@ -404,7 +406,7 @@ If you want to build the image yourself or contribute to development:
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/fireaimready/absolute-valheim-server.git
+git clone https://github.com/abspwgm/absolute-valheim-server.git
 cd absolute-valheim-server
 ```
 
@@ -461,7 +463,9 @@ This project uses GitHub Actions with two independent pipelines:
 
 Images are published to:
 - **Docker Hub:** `docker.io/fireaimready/absolute-valheim-server`
-- **GitHub Container Registry:** `ghcr.io/fireaimready/absolute-valheim-server`
+- **GitHub Container Registry:** `ghcr.io/abspwgm/absolute-valheim-server`
+
+> Images published before 2026-09-20 remain at `ghcr.io/fireaimready/absolute-valheim-server` but are no longer updated. Use `ghcr.io/abspwgm/absolute-valheim-server` or Docker Hub.
 
 ---
 
@@ -484,7 +488,7 @@ sudo useradd -m -s /bin/bash valheim
 
 ```bash
 # Clone repository
-git clone https://github.com/fireaimready/absolute-valheim-server.git
+git clone https://github.com/abspwgm/absolute-valheim-server.git
 cd absolute-valheim-server
 
 # Copy service file
@@ -540,4 +544,4 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ---
 
-**Need help?** Open an [issue](https://github.com/fireaimready/absolute-valheim-server/issues) on GitHub.
+**Need help?** Open an [issue](https://github.com/abspwgm/absolute-valheim-server/issues) on GitHub.
