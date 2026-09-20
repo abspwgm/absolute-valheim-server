@@ -6,6 +6,8 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/fireaimready/absolute-valheim-server)](https://hub.docker.com/r/fireaimready/absolute-valheim-server)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
+New to hosting? Start with the [step-by-step install guide](docs/INSTALL.md).
+
 A production-ready, containerized Valheim dedicated server with automatic updates, backups, log filtering, and comprehensive end-to-end testing. Ships as two artifacts: a stock **vanilla** image built for uptime, and a **BepInEx** image with a pinned mod loader and a disaster-response harness for the day a Valheim patch breaks your mods.
 
 ## Features
