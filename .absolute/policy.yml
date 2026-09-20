@@ -17,7 +17,7 @@ contract:
 tiers:
   fast:
     gates: push
-    command: shellcheck -S error -s bash -x scripts/* tests/*.sh tests/e2e/*.sh
+    command: shellcheck -S error -s bash -x scripts/* tests/*.sh tests/e2e/*.sh, then every tests/test_*.sh unit test
     budget: under a minute
   merge:
     gates: merge
