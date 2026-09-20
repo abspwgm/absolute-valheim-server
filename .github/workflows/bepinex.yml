@@ -21,8 +21,11 @@ on:
     branches: [main, develop]
     paths-ignore:
       - '**.md'
+  # Any base, not just main. A pull request stacked on another branch is still
+  # a change that has to be gated; filtering on [main] meant stacked work
+  # merged with no checks at all and only got tested once the stack landed.
   pull_request:
-    branches: [main]
+    branches: ['**']
   schedule:
     # Nightly canary (UTC). Valheim patches tend to land on weekday mornings CET.
     - cron: '0 6 * * *'
