@@ -20,7 +20,7 @@ ARG BEPINEX_SHA256=37a91c000b4e88f2ed7a4bd7d812239852d2e36cbf0ff0a9f5faacfba46b1
 # -----------------------------------------------------------------------------
 # Stage 1: Base image with dependencies
 # -----------------------------------------------------------------------------
-FROM debian:bookworm-slim AS base
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS base
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive

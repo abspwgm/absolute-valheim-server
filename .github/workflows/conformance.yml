@@ -19,6 +19,6 @@ permissions:
 jobs:
   conformance:
     name: Conformance
-    uses: abspwgm/absolute-standard/.github/workflows/conformance.yml@54f604f2696ee6a82146b4658ee9eede647406d4
+    uses: abspwgm/absolute-standard/.github/workflows/conformance.yml@fad83f7faa00efd2b29b88ca332f7358c553ee05
     with:
-      standard-ref: 54f604f2696ee6a82146b4658ee9eede647406d4
+      standard-ref: fad83f7faa00efd2b29b88ca332f7358c553ee05

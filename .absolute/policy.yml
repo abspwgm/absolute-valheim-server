@@ -87,6 +87,7 @@ security:
           verified_by: scripts/valheim-modcheck
     L3:
       requirements:
+        base_image_from_approved_library: Dockerfile
         least_privilege_tokens: .github/workflows/publish.yml
         no_secrets_in_build_args: Dockerfile
         ephemeral_runners: .github/workflows/e2e.yml
@@ -171,6 +172,15 @@ security:
             opens, updates or closes a single mod-canary issue, so "it still
             works" is a claim with a date on it.
           verified_by: .github/workflows/bepinex.yml
+
+build:
+  base_images:
+    - catalog_id: debian-bookworm-slim
+      used_in: Dockerfile
+      reason: >-
+        SteamCMD is a 32-bit binary and needs glibc with multiarch, which no
+        hardened entry in the library has yet been proven to provide. Debian
+        slim is the smallest approved base that runs it.
 
 exceptions:
   - id: server-runs-as-root
