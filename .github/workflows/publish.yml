@@ -38,7 +38,10 @@ permissions:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Docker Hub is its own namespace and did not move with the GitHub repo.
+  DOCKERHUB_IMAGE: fireaimready/absolute-valheim-server
+  # GHCR follows the GitHub owner.
+  GHCR_IMAGE: ${{ github.repository }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -126,8 +129,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            ghcr.io/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_IMAGE }}
+            ghcr.io/${{ env.GHCR_IMAGE }}
           tags: |
             # Set latest tag for main branch
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_run' }}
@@ -178,10 +181,10 @@ jobs:
           echo "### Pull Commands" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "# Docker Hub" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.DOCKERHUB_IMAGE }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "# GitHub Container Registry" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ghcr.io/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ghcr.io/${{ env.GHCR_IMAGE }}:latest" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
   # ---------------------------------------------------------------------------

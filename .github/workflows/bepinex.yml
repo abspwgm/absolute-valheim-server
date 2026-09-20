@@ -53,7 +53,10 @@ env:
   VALHEIM_APP_ID: '896660'
   VALHEIM_VARIANT: bepinex
   REGISTRY: docker.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Docker Hub is its own namespace and did not move with the GitHub repo.
+  DOCKERHUB_IMAGE: fireaimready/absolute-valheim-server
+  # GHCR follows the GitHub owner.
+  GHCR_IMAGE: ${{ github.repository }}
 
 concurrency:
   group: bepinex-${{ github.ref }}
@@ -252,8 +255,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            ghcr.io/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_IMAGE }}
+            ghcr.io/${{ env.GHCR_IMAGE }}
           # Docker convention for variants: `-bepinex` suffix, plus a bare
           # `bepinex` moving tag that mirrors `latest`.
           flavor: |
