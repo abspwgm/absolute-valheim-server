@@ -8,7 +8,7 @@
 #   3. View logs: docker compose logs -f
 #   4. Stop: docker compose down
 #
-# Running BOTH servers side by side on one host (e.g. the Proxmox VM)?
+# Running BOTH servers side by side on one host?
 # See deploy/proxmox/docker-compose.yml.
 # =============================================================================
 
