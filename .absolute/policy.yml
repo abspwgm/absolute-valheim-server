@@ -1,5 +1,5 @@
 # Local policy for absolute-valheim-server.
-# Checked on every push against https://github.com/abspwgm/.github
+# Checked on every push against the vendored copy in .absolute/standard/.
 project: absolute-valheim-server
 standard_version: "1.0.0"
 

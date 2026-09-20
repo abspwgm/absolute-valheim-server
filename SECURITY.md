@@ -41,7 +41,8 @@ this repository's issues or workflow artifacts.
 
 ## Standard
 
-This repository conforms to the
-[Absolute engineering standard](https://github.com/abspwgm/.github);
-its security baseline is layered L1 to L7, and this repository's answers,
-including its open exceptions, are in [`.absolute/policy.yml`](.absolute/policy.yml).
+This repository conforms to the Absolute engineering standard; its security
+baseline is layered L1 to L7, and this repository's answers, including its open
+exceptions, are in [`.absolute/policy.yml`](.absolute/policy.yml). The check
+that enforces them is vendored under
+[`.absolute/standard/`](.absolute/standard/PROVENANCE.md).
