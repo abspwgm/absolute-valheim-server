@@ -16,10 +16,12 @@
 # to say about itself: two independent views of its state, the one it
 # advertises and the one it logs, have to agree.
 #
-# The query goes from the runner through the published port with bash's
-# /dev/udp. docker-compose.test.yml publishes 2457/udp on a random host port,
-# so the port is looked up, not assumed. A2S_INFO has required a challenge
-# round trip since 2020; the first reply may be S2C_CHALLENGE (0x41).
+# The query goes from the runner, outside the container, to the container's own
+# address on the Docker network, with bash's /dev/udp. docker-compose.test.yml
+# deliberately publishes no host ports (the shared runner would collide on
+# them), so this is the path a machine on the same network would use; nothing
+# in it runs inside the container being tested. A2S_INFO has required a
+# challenge round trip since 2020; the first reply may be S2C_CHALLENGE (0x41).
 
 set -e
 
@@ -37,7 +39,7 @@ A2S_QUERY='\xFF\xFF\xFF\xFFTSource Engine Query\x00'
 # a2s_info ; the server's reply as a lowercase hex string, or nothing
 a2s_info() {
     local fd reply challenge escaped=""
-    exec {fd}<>"/dev/udp/127.0.0.1/${QUERY_PORT}" || return 1
+    exec {fd}<>"/dev/udp/${QUERY_HOST}/${QUERY_PORT}" || return 1
     # One printf per datagram: two writes would be two packets.
     printf '%b' "${A2S_QUERY}" >&"${fd}"
     reply="$(timeout 5 dd bs=1400 count=1 status=none <&"${fd}" | od -An -v -tx1 | tr -d ' \n')" || true
@@ -78,15 +80,16 @@ test_discoverable() {
         log_warn "Server may not be fully ready"
     fi
 
-    # "0.0.0.0:49157" (and possibly an IPv6 line): the IPv4 host port.
-    QUERY_PORT="$(docker port "${CONTAINER}" 2457/udp 2>/dev/null | awk -F: '/^0\.0\.0\.0:/ {print $NF; exit}')"
-    if [[ ! "${QUERY_PORT}" =~ ^[0-9]+$ ]]; then
-        log_error "2457/udp is not published to the host, so no browser could reach it"
-        docker port "${CONTAINER}" 2>&1 || true
+    # The container's address on its Docker network (the first, if several).
+    QUERY_PORT=2457
+    QUERY_HOST="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "${CONTAINER}" 2>/dev/null | awk '{print $1}')"
+    if [[ ! "${QUERY_HOST}" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+        log_error "Could not find the container's address on its Docker network"
+        docker inspect -f '{{json .NetworkSettings.Networks}}' "${CONTAINER}" 2>&1 || true
         log_test_fail "${TEST_NAME}"
         return 1
     fi
-    log_info "The query port 2457/udp is published on host port ${QUERY_PORT}"
+    log_info "Querying ${QUERY_HOST}:${QUERY_PORT}/udp from the runner"
 
     # The query port can lag the game port for a moment after startup.
     local attempt
