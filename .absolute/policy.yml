@@ -37,7 +37,11 @@ ready_ladder:
   discoverable: >-
     discoverable - a Steam server-browser query (A2S_INFO) from outside the
     container shows the configured name and game, and the player count it
-    advertises matches the one the idle guard reads from the server's log
+    advertises matches the one the idle guard reads from the server's log.
+    A private Valheim server answers no such query, so the test server runs
+    public; a public server registers with Steam under the host's public IP, so
+    that happens only on a GitHub-hosted runner (e2e.yml), never on our own
+    hardware. Anywhere else the rung is not run, never failed.
   authenticated:
     status: not_applicable
     reason: >-

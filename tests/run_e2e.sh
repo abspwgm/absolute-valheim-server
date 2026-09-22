@@ -293,7 +293,17 @@ run_test() {
         local end_time
         end_time=$(date +%s)
         local duration=$((end_time - start_time))
-        
+
+        # 77: the test could not apply here and says why (the automake
+        # convention). Not run, never failed; the verdict records the rung as
+        # not_run, so it cannot read "ready" on a run that skipped it.
+        if [[ ${exit_code} -eq 77 ]]; then
+            log_warn "Not run: ${test_name} (${duration}s)"
+            TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+            TEST_RESULT["${test_name}"]="not_run"
+            return 0
+        fi
+
         if [[ ${exit_code} -eq 124 ]]; then
             log_error "Test timed out: ${test_name} (${duration}s)"
         else

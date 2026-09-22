@@ -27,7 +27,11 @@ services:
       - SERVER_PORT=2456
       - WORLD_NAME=TestWorld
       - SERVER_PASS=testpass123
-      - SERVER_PUBLIC=false
+      # Private unless the workflow says otherwise, and it only says so on a
+      # GitHub-hosted runner: a public server registers with Steam under the
+      # host's public IP. The discoverable rung needs it public, because a
+      # private Valheim server does not answer a server-browser query at all.
+      - SERVER_PUBLIC=${E2E_SERVER_PUBLIC:-false}
       - CROSSPLAY=false
       - SERVER_ARGS=
 

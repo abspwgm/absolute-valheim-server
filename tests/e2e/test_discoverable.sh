@@ -76,6 +76,20 @@ test_discoverable() {
     log_test_start "${TEST_NAME}"
     assert_container_running "${CONTAINER}"
 
+    # A private Valheim server does not answer a server-browser query at all:
+    # CI and a local reproduction both saw a bound, silent 2457 with
+    # SERVER_PUBLIC=false. Players find a private server by its address, not in
+    # a browser, so there is nothing to discover. Not run, not failed; the
+    # workflow makes the server public only where that lists no address of ours.
+    local public
+    public="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${CONTAINER}" 2>/dev/null \
+        | sed -n 's/^SERVER_PUBLIC=//p' | head -1)"
+    if [[ "${public,,}" != "true" ]]; then
+        log_warn "Not run: the server is private (SERVER_PUBLIC=${public:-unset}), and a private Valheim server is not listed or queryable"
+        log_warn "Set E2E_SERVER_PUBLIC=true only on a disposable network: a public server registers with Steam under this machine's public IP"
+        exit 77
+    fi
+
     if ! wait_for_log "${CONTAINER}" "Game server connected" 300; then
         log_warn "Server may not be fully ready"
     fi
