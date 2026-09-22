@@ -28,6 +28,35 @@ tiers:
     command: bash tests/run_e2e.sh && gh workflow run bepinex.yml
     budget: as long as it takes; the bepinex suite includes the disaster drills
 
+# Clause 2.10 (standard 1.4.0), declared ahead of this repository's move from
+# 1.0.0: the ready ladder, and the local definition of each rung. tests/run_e2e.sh
+# implements it and writes the verdict (data/logs/verdict.json).
+ready_ladder:
+  up: server_start (and bepinex_loaded for the modded image)
+  reachable: server_query - the game and query ports are bound
+  discoverable: >-
+    discoverable - a Steam server-browser query (A2S_INFO) from outside the
+    container shows the configured name and game, and the player count it
+    advertises matches the one the idle guard reads from the server's log.
+    A private Valheim server answers no such query, so the test server runs
+    public; a public server registers with Steam under the host's public IP, so
+    that happens only on a GitHub-hosted runner (e2e.yml), never on our own
+    hardware. Anywhere else the rung is not run, never failed.
+  authenticated:
+    status: not_applicable
+    reason: >-
+      Valheim's dedicated server has no remote-admin interface; its console
+      lives in the game client. No headless client exists, and driving the real
+      one would need a GPU and a Steam account that owns the game, which is not
+      something CI can do honestly. The alternatives considered and rejected: a
+      third-party RCON plugin would add code we ship to prove the plugin rather
+      than the server, and only for the modded image. "Ready" for Valheim means
+      every other rung passed, and anything that shows the verdict says so.
+    revisit_when: the dedicated server gains a remote-admin or query interface that reports its own state
+  recoverable: >-
+    backup, graceful_shutdown, restart_update, idle_guard, dr_snapshot_restore
+    (and the safe-mode and disaster drills for the modded image)
+
 security:
   layers:
     L1:
