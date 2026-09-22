@@ -56,8 +56,10 @@ env:
   VALHEIM_APP_ID: '896660'
   VALHEIM_VARIANT: bepinex
   REGISTRY: docker.io
-  # Docker Hub is its own namespace and did not move with the GitHub repo.
-  DOCKERHUB_IMAGE: fireaimready/absolute-valheim-server
+  # Docker Hub has its own namespace: the Hub organization is abspowergaming,
+  # because abspwgm was taken there. Moved off the fireaimready account
+  # 2026-09-22; that repository keeps its old tags and stops updating.
+  DOCKERHUB_IMAGE: abspowergaming/absolute-valheim-server
   # GHCR follows the GitHub owner.
   GHCR_IMAGE: ${{ github.repository }}
 

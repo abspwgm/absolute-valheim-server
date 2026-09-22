@@ -64,7 +64,7 @@ save and quit). On Windows, use Notepad and make sure the name does not end in `
 ```yaml
 services:
   valheim:
-    image: fireaimready/absolute-valheim-server:latest
+    image: abspowergaming/absolute-valheim-server:latest
     container_name: valheim-server
 
     environment:
@@ -259,7 +259,7 @@ and paste the last 50 lines of `docker compose logs`. Remove your server passwor
 
 - **Container:** the sealed box Docker runs the server in.
 - **Image:** the download that a container is started from. Ours is
-  `fireaimready/absolute-valheim-server:latest`.
+  `abspowergaming/absolute-valheim-server:latest`.
 - **Compose file:** `docker-compose.yml`, the one file holding all your server's settings.
 - **Volume:** a folder on your computer that the container saves into, so your world
   survives updates and restarts.

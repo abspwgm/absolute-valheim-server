@@ -3,7 +3,7 @@
 [![E2E Tests](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/e2e.yml/badge.svg)](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/e2e.yml)
 [![BepInEx Artifact](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/bepinex.yml/badge.svg)](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/bepinex.yml)
 [![Docker Image](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/publish.yml/badge.svg)](https://github.com/abspwgm/absolute-valheim-server/actions/workflows/publish.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/fireaimready/absolute-valheim-server)](https://hub.docker.com/r/fireaimready/absolute-valheim-server)
+[![Docker Pulls](https://img.shields.io/docker/pulls/abspowergaming/absolute-valheim-server)](https://hub.docker.com/r/abspowergaming/absolute-valheim-server)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 New to hosting? Start with the [step-by-step install guide](docs/INSTALL.md).
@@ -49,7 +49,7 @@ Create a new directory for your server and add a `docker-compose.yml` file:
 ```yaml
 services:
   valheim:
-    image: fireaimready/absolute-valheim-server:latest
+    image: abspowergaming/absolute-valheim-server:latest
     container_name: valheim-server
 
     environment:
@@ -462,10 +462,15 @@ This project uses GitHub Actions with two independent pipelines:
 3. **BepInEx Artifact** ([bepinex.yml](.github/workflows/bepinex.yml)) - Bepinex e2e + disaster drills on every push/PR and **nightly** as a canary against current Steam; publishes `bepinex` / `*-bepinex` tags from its own green runs; opens or updates a `mod-canary` issue on failure and closes it on recovery
 
 Images are published to:
-- **Docker Hub:** `docker.io/fireaimready/absolute-valheim-server`
-- **GitHub Container Registry:** `ghcr.io/abspwgm/absolute-valheim-server`
+- **Docker Hub:** `docker.io/abspowergaming/absolute-valheim-server` - what to pull
+- **GitHub Container Registry:** `ghcr.io/abspwgm/absolute-valheim-server` - private, for testing
 
-> Images published before 2026-09-20 remain at `ghcr.io/fireaimready/absolute-valheim-server` but are no longer updated. Use `ghcr.io/abspwgm/absolute-valheim-server` or Docker Hub.
+> **Moved 2026-09-22.** Both registries used to sit under `fireaimready`, a personal
+> account that predates the organization. `docker.io/fireaimready/absolute-valheim-server`
+> and `ghcr.io/fireaimready/absolute-valheim-server` keep the tags they already have and
+> are no longer updated, so a `docker compose pull` there now returns the same image
+> forever. Change the image name to `abspowergaming/absolute-valheim-server` and pull
+> again to resume updates.
 
 ---
 
