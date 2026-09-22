@@ -47,7 +47,14 @@ DIGEST_PIN = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 # High-signal only. A noisy secret scanner gets muted, and a muted control is
 # not a control (clause 1.3).
-SECRET_PATTERNS = (
+#
+# Named for what it holds -- detection signatures -- and deliberately not for
+# what it detects. A constant whose name reads like a credential is classified
+# as sensitive data by code scanning, which then reports every finding built
+# from it as a clear-text leak. Those alerts are false: only `label` below ever
+# reaches a finding, never the matched text. Renaming this back puts a standing
+# false positive on the alert list of every repository carrying this file.
+LEAK_SIGNATURES = (
     (re.compile(r"-----BEGIN (RSA|OPENSSH|DSA|EC|PGP) PRIVATE KEY-----"), "private key block"),
     (re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "GitHub personal access token"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"), "GitHub fine-grained token"),
@@ -491,7 +498,7 @@ def check_secrets(repo: pathlib.Path, result: Result) -> None:
         for number, line in enumerate(text.splitlines(), start=1):
             if ALLOW_SECRET_MARKER in line:
                 continue  # Deliberate: a test fixture or documented example.
-            for pattern, label in SECRET_PATTERNS:
+            for pattern, label in LEAK_SIGNATURES:
                 if pattern.search(line):
                     result.fail(
                         "6.1",
