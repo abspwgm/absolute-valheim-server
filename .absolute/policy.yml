@@ -114,6 +114,14 @@ security:
             by sha256, and the mod check counts the loaded plugins against
             BEPINEX_EXPECT_PLUGINS on every start.
           verified_by: scripts/valheim-modcheck
+        - id: pins-are-kept-current
+          description: >-
+            Pinning is half the control; the other half is that a pin moves.
+            The action SHAs and the base image digest are carried forward by a
+            weekly grouped Dependabot pull request rather than by someone
+            remembering. The BepInEx and mods.lock pins are deliberately not
+            Dependabot's: they are game-side and move with their own check.
+          verified_by: tests/test_dependabot.sh
     L3:
       requirements:
         base_image_from_approved_library: Dockerfile
