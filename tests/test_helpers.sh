@@ -60,6 +60,39 @@ log_test_fail() {
 }
 
 # -----------------------------------------------------------------------------
+# Check accounting
+# -----------------------------------------------------------------------------
+# A test that stops at its first failed assertion shows one problem per run.
+# These collect instead, so one run shows the whole distance.
+#
+# The names and behaviour match absolute-server-template's helpers on purpose:
+# a test written against the template runs here unchanged, which is the only
+# way a shared guard stays one file rather than five diverging copies. The
+# bodies use this repository's own loggers.
+CHECKS_FAILED=0
+
+check() {
+    local description="$1"
+    shift
+    if "$@"; then
+        log_success "${description}"
+    else
+        log_error "${description}"
+        CHECKS_FAILED=$((CHECKS_FAILED + 1))
+    fi
+}
+
+finish() {
+    local name="$1"
+    if [[ ${CHECKS_FAILED} -gt 0 ]]; then
+        log_test_fail "${name}: ${CHECKS_FAILED} check(s) failed"
+        exit 1
+    fi
+    log_test_pass "${name}"
+    exit 0
+}
+
+# -----------------------------------------------------------------------------
 # Assertions
 # -----------------------------------------------------------------------------
 assert_container_running() {
