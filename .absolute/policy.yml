@@ -14,6 +14,15 @@ contract:
   - The volume layout /config and /opt/valheim/server
   - MOD_FAILURE_POLICY and its default, hold
 
+# Clause 4.5: this repository keeps its own issue forms.
+issue_templates:
+  set: local
+  reason: >-
+    the organisation's inherited form asks for a version and an environment;
+    triage for an image starts from the digest that actually ran, the game build
+    the server reported at startup, and whether the problem is the updater, the
+    backup or the ports
+
 tiers:
   fast:
     gates: push
