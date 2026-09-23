@@ -18,6 +18,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 E2E_DIR="${SCRIPT_DIR}/e2e"
 
+# Preconditions, and the vocabulary for saying which one failed.
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/preflight.sh"
+
 # Test configuration
 CONTAINER_NAME="valheim-server"
 COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.test.yml"
@@ -395,9 +399,18 @@ check_preconditions() {
         echo "the Docker daemon is not reachable"
         return 1
     fi
-    if command -v curl >/dev/null 2>&1 \
-        && ! curl -sf -m 20 -o /dev/null https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/; then
-        echo "Steam's web API is unreachable from the runner"
+    # The image is built in this run, and the Dockerfile's first network
+    # instruction fetches SteamCMD from here. Probe that, not Steam's web API:
+    # nothing in this suite calls the web API, so an outage there used to mark
+    # runs inconclusive that would have passed.
+    #
+    # probe_url keeps the status code and curl's exit code, so the reason
+    # reaching verdict.json distinguishes a rate limit from a runner with no
+    # egress from an outage on Valve's side (2.11). tests/test_preflight.sh
+    # holds it to that.
+    local probe
+    if ! probe="$(probe_url "${STEAMCMD_INSTALLER_URL}" 20)"; then
+        echo "${probe}"
         return 1
     fi
     local free_kb
