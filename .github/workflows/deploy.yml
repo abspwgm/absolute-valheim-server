@@ -1,0 +1,167 @@
+# =============================================================================
+# Absolute Valheim Server - Deployment Workflow
+# =============================================================================
+# Automatically redeploys the Valheim servers on Proxmox when changes merge
+# to main. The merge approval IS the deployment approval (ADR 0001).
+#
+# Prerequisites:
+# 1. VALHEIM_PROXMOX environment configured in GitHub with:
+#    - Branch protection: main only
+#    - Secrets: VALHEIM_DEPLOY_KEY, VALHEIM_HOST, VALHEIM_KNOWN_HOSTS
+# 2. Self-hosted runner with capsule-ops label on CapsuleCorp
+# =============================================================================
+
+name: Deploy Valheim Server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/proxmox/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'VALHEIM_PROXMOX'
+        type: choice
+        options:
+          - VALHEIM_PROXMOX
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    name: Deploy to Proxmox
+    runs-on: [self-hosted, capsule-ops]
+    environment: VALHEIM_PROXMOX
+    timeout-minutes: 30
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # -----------------------------------------------------------------------
+      # Setup SSH
+      # -----------------------------------------------------------------------
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VALHEIM_DEPLOY_KEY }}" > ~/.ssh/valheim_deploy
+          chmod 600 ~/.ssh/valheim_deploy
+
+          mkdir -p ~/.ssh/known_hosts.d
+          echo "${{ secrets.VALHEIM_KNOWN_HOSTS }}" > ~/.ssh/known_hosts.d/valheim_proxmox
+          chmod 600 ~/.ssh/known_hosts.d/valheim_proxmox
+
+      # -----------------------------------------------------------------------
+      # Validate Configuration
+      # -----------------------------------------------------------------------
+      - name: Validate docker-compose configuration
+        run: |
+          cd deploy/proxmox
+          # Check syntax without actually deploying
+          docker compose config > /dev/null
+          echo "✅ docker-compose.yml is valid"
+
+      # -----------------------------------------------------------------------
+      # Deploy to Proxmox
+      # -----------------------------------------------------------------------
+      - name: Pull latest images
+        env:
+          VALHEIM_HOST: ${{ secrets.VALHEIM_HOST }}
+        run: |
+          ssh -i ~/.ssh/valheim_deploy \
+              -o UserKnownHostsFile=~/.ssh/known_hosts.d/valheim_proxmox \
+              -o StrictHostKeyChecking=accept-new \
+              valheim@"${VALHEIM_HOST}" << 'EOF'
+          set -e
+          echo "📦 Pulling latest Valheim server images..."
+          cd /opt/valheim-server/deploy/proxmox
+          docker compose pull
+          echo "✅ Images pulled successfully"
+          EOF
+
+      - name: Redeploy containers
+        env:
+          VALHEIM_HOST: ${{ secrets.VALHEIM_HOST }}
+        run: |
+          ssh -i ~/.ssh/valheim_deploy \
+              -o UserKnownHostsFile=~/.ssh/known_hosts.d/valheim_proxmox \
+              -o StrictHostKeyChecking=accept-new \
+              valheim@"${VALHEIM_HOST}" << 'EOF'
+          set -e
+          echo "🚀 Redeploying Valheim servers..."
+          cd /opt/valheim-server/deploy/proxmox
+          docker compose up -d
+          echo "✅ Deployment completed"
+          EOF
+
+      # -----------------------------------------------------------------------
+      # Verify Deployment
+      # -----------------------------------------------------------------------
+      - name: Verify server status
+        env:
+          VALHEIM_HOST: ${{ secrets.VALHEIM_HOST }}
+        run: |
+          ssh -i ~/.ssh/valheim_deploy \
+              -o UserKnownHostsFile=~/.ssh/known_hosts.d/valheim_proxmox \
+              -o StrictHostKeyChecking=accept-new \
+              valheim@"${VALHEIM_HOST}" << 'EOF'
+          set -e
+          echo "🔍 Verifying server status..."
+          cd /opt/valheim-server/deploy/proxmox
+
+          # Check container status
+          echo "Container status:"
+          docker compose ps
+
+          # Verify both servers are running
+          vanilla_status=$(docker compose ps valheim-vanilla --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+          bepinex_status=$(docker compose ps valheim-bepinex --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+
+          echo ""
+          echo "Valheim Vanilla: $vanilla_status"
+          echo "Valheim BepInEx: $bepinex_status"
+
+          if [[ "$vanilla_status" != "running" ]] || [[ "$bepinex_status" != "running" ]]; then
+            echo "⚠️ Warning: Not all servers are running. Check logs:"
+            docker compose logs --tail=50
+            exit 1
+          fi
+
+          echo "✅ All servers running"
+          EOF
+
+      # -----------------------------------------------------------------------
+      # Cleanup
+      # -----------------------------------------------------------------------
+      - name: Cleanup SSH keys
+        if: always()
+        run: |
+          rm -f ~/.ssh/valheim_deploy
+          rm -f ~/.ssh/known_hosts.d/valheim_proxmox
+
+      # -----------------------------------------------------------------------
+      # Notification
+      # -----------------------------------------------------------------------
+      - name: Deployment successful
+        if: success()
+        run: |
+          echo "✅ Valheim servers deployed successfully"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "🔗 Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Deployment failed
+        if: failure()
+        run: |
+          echo "❌ Deployment failed"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "🔗 Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1
