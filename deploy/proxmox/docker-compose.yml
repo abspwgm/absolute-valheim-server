@@ -87,7 +87,7 @@ services:
       # Track Steam like the players' clients do, but snapshot first and verify
       # mods after. Set UPDATE_ON_START=false to make updates fully manual.
       - UPDATE_ON_START=${BEPINEX_UPDATE_ON_START:-true}
-      - UPDATE_CRON=
+      - UPDATE_CRON=${BEPINEX_UPDATE_CRON:-0 4 * * *}
       - UPDATE_IF_IDLE=true
       - BACKUPS_ENABLED=true
       - BACKUPS_CRON=0 * * * *
